@@ -82,11 +82,15 @@ export async function fetchGrokCliModels(
     },
   });
   if (!response.ok) return GROK_CLI_MODELS;
-  const payload = await response.json() as { data?: GrokProxyModel[] };
-  const models = Array.isArray(payload.data) ? payload.data.map(mapProxyModel).filter(Boolean) : [];
-  return models.length > 0 ? models : GROK_CLI_MODELS;
-}
-
-export function supportsReasoningEffort(modelId: string): boolean {
-  return GROK_CLI_MODELS.some((model) => model.id === modelId && model.supportsReasoningEffort);
+  try {
+    const payload = await response.json() as { data?: GrokProxyModel[] };
+    const models = Array.isArray(payload.data)
+      ? payload.data.map(mapProxyModel).filter((model): model is GrokCliModel => Boolean(model))
+      : [];
+    return models.length > 0 ? models : GROK_CLI_MODELS;
+  } catch {
+    // HTTP 200 with an invalid/HTML body or an unexpected shape: fall back to
+    // the static catalog instead of breaking dynamic model refresh.
+    return GROK_CLI_MODELS;
+  }
 }

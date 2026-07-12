@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
 import { loadGrokCliCredentials } from "./auth";
 
 const BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing";
@@ -53,18 +53,23 @@ export async function fetchBillingUsage(token: string, fetchImpl: typeof fetch =
   }
 
   const usage: BillingUsage = { monthly: { limit, used, resetsAt } };
-  const weeklyResponse = await fetchImpl(`${BILLING_URL}?format=credits`, { headers });
-  if (weeklyResponse.ok) {
-    const weeklyConfig = configFrom(await weeklyResponse.json());
-    const currentPeriod = weeklyConfig.currentPeriod;
-    const percentUsed = numericValue(weeklyConfig.creditUsagePercent);
-    const weeklyReset =
-      currentPeriod && typeof currentPeriod === "object" && typeof (currentPeriod as Record<string, unknown>).end === "string"
-        ? (currentPeriod as Record<string, unknown>).end as string
-        : weeklyConfig.billingPeriodEnd;
-    if (percentUsed !== undefined && typeof weeklyReset === "string") {
-      usage.weekly = { percentUsed, resetsAt: weeklyReset };
+  try {
+    const weeklyResponse = await fetchImpl(`${BILLING_URL}?format=credits`, { headers });
+    if (weeklyResponse.ok) {
+      const weeklyConfig = configFrom(await weeklyResponse.json());
+      const currentPeriod = weeklyConfig.currentPeriod;
+      const percentUsed = numericValue(weeklyConfig.creditUsagePercent);
+      const weeklyReset =
+        currentPeriod && typeof currentPeriod === "object" && typeof (currentPeriod as Record<string, unknown>).end === "string"
+          ? (currentPeriod as Record<string, unknown>).end as string
+          : weeklyConfig.billingPeriodEnd;
+      if (percentUsed !== undefined && typeof weeklyReset === "string") {
+        usage.weekly = { percentUsed, resetsAt: weeklyReset };
+      }
     }
+  } catch {
+    // Weekly data is optional: a malformed body or unexpected shape from the
+    // credits endpoint must not hide the already-parsed monthly balance.
   }
   return usage;
 }
@@ -92,13 +97,32 @@ export function formatBillingUsage(usage: BillingUsage): string {
   return lines.join("\n");
 }
 
+const PROVIDER_ID = "grok-build";
+
+async function resolveUsageToken(ctx: ExtensionCommandContext): Promise<string | undefined> {
+  // Prefer OMP's provider auth storage: it covers credentials created by
+  // `/login grok-build` and runs them through the provider refresh pipeline,
+  // re-minting expired access tokens instead of returning a billing 401.
+  try {
+    const token = await ctx.modelRegistry?.getApiKeyForProvider(
+      PROVIDER_ID,
+      ctx.sessionManager?.getSessionId(),
+    );
+    if (token) return token;
+  } catch {
+    // Fall through to the local Grok CLI credentials.
+  }
+
+  const credentials = await loadGrokCliCredentials();
+  return typeof credentials === "string" ? credentials : credentials?.access;
+}
+
 export function registerUsageCommand(pi: ExtensionAPI): void {
   pi.registerCommand("grok-build-usage", {
     description: "Show Grok Build subscription usage",
     handler: async (_args, ctx) => {
-      const credentials = await loadGrokCliCredentials();
-      const token = typeof credentials === "string" ? credentials : credentials?.access;
-      if (!token) throw new Error("No Grok Build CLI login found. Run `grok login` or `/login grok-build`.");
+      const token = await resolveUsageToken(ctx);
+      if (!token) throw new Error("No Grok Build login found. Run `/login grok-build` or `grok login`.");
       ctx.ui.notify(formatBillingUsage(await fetchBillingUsage(token)), "info");
     },
   });

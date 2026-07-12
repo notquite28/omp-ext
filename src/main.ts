@@ -43,9 +43,14 @@ export default function grokBuildExtension(pi: ExtensionAPI): void {
 
   pi.on("before_provider_request", (event, ctx) => {
     if (ctx.model?.provider !== PROVIDER_ID) return;
+    // Derive reasoning support from the live model metadata rather than the
+    // static catalog, so dynamically discovered reasoning models keep the
+    // user-selected thinking effort. `thinking.efforts` is only populated for
+    // models that expose a controllable reasoning-effort surface.
+    const supportsReasoning = (ctx.model.thinking?.efforts?.length ?? 0) > 0;
     return sanitizeProxyPayload(
       event.payload,
-      ctx.model.id,
+      supportsReasoning,
       ctx.sessionManager?.getSessionId(),
     );
   });

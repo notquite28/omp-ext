@@ -1,8 +1,6 @@
-import { supportsReasoningEffort } from "./models";
-
 export function sanitizeProxyPayload(
   payload: unknown,
-  modelId: string,
+  supportsReasoning: boolean,
   sessionId?: string,
 ): unknown {
   if (!payload || typeof payload !== "object") return payload;
@@ -17,7 +15,7 @@ export function sanitizeProxyPayload(
     });
   }
 
-  if (supportsReasoningEffort(modelId)) {
+  if (supportsReasoning) {
     const reasoning = next.reasoning;
     if (reasoning && typeof reasoning === "object") {
       const value = reasoning as Record<string, unknown>;
