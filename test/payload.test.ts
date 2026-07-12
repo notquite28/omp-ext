@@ -4,7 +4,7 @@ import { sanitizeProxyPayload } from "../src/payload";
 describe("sanitizeProxyPayload", () => {
   test("keeps reasoning params for a reasoning-capable model and normalizes minimal effort", () => {
     const result = sanitizeProxyPayload(
-      { reasoning: { effort: "minimal" }, reasoningEffort: "minimal" },
+      { reasoning: { effort: "minimal", summary: "auto" }, reasoningEffort: "minimal" },
       true,
     ) as Record<string, unknown>;
     expect(result.reasoning).toEqual({ effort: "low" });

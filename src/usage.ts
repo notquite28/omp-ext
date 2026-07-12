@@ -1,7 +1,9 @@
+import type { FetchImpl } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
 import { loadGrokCliCredentials } from "./auth";
 
 const BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing";
+const BILLING_REQUEST_TIMEOUT_MS = 10_000;
 
 export interface BillingUsage {
   monthly: {
@@ -15,21 +17,26 @@ export interface BillingUsage {
   };
 }
 
-function numericValue(value: unknown): number | undefined {
-  const candidate = value && typeof value === "object" ? (value as Record<string, unknown>).val : value;
-  if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
-  if (typeof candidate === "string") {
-    const parsed = Number(candidate);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return undefined;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
 }
 
-function configFrom(payload: unknown): Record<string, unknown> {
-  if (!payload || typeof payload !== "object") throw new Error("Invalid Grok billing response");
-  const config = (payload as Record<string, unknown>).config;
-  if (!config || typeof config !== "object") throw new Error("Invalid Grok billing response");
-  return config as Record<string, unknown>;
+function numericValue(value: unknown): number | undefined {
+  const candidate = isRecord(value) ? value.val : value;
+  if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
+  if (typeof candidate !== "string" || !candidate.trim()) return undefined;
+  const parsed = Number(candidate);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function validTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const timestamp = value.trim();
+  return timestamp && Number.isFinite(Date.parse(timestamp)) ? timestamp : undefined;
+}
+
+function configFrom(payload: unknown): Record<string, unknown> | undefined {
+  return isRecord(payload) && isRecord(payload.config) ? payload.config : undefined;
 }
 
 function billingHeaders(token: string): Record<string, string> {
@@ -40,36 +47,54 @@ function billingHeaders(token: string): Record<string, string> {
   };
 }
 
-export async function fetchBillingUsage(token: string, fetchImpl: typeof fetch = fetch): Promise<BillingUsage> {
+function requestOptions(headers: Record<string, string>): RequestInit {
+  return {
+    headers,
+    redirect: "error",
+    signal: AbortSignal.timeout(BILLING_REQUEST_TIMEOUT_MS),
+  };
+}
+
+export async function fetchBillingUsage(token: string, fetchImpl: FetchImpl = fetch): Promise<BillingUsage> {
   const headers = billingHeaders(token);
-  const monthlyResponse = await fetchImpl(BILLING_URL, { headers });
+  let monthlyResponse: Response;
+  try {
+    monthlyResponse = await fetchImpl(BILLING_URL, requestOptions(headers));
+  } catch {
+    throw new Error("Grok billing request failed");
+  }
   if (!monthlyResponse.ok) throw new Error(`Grok billing endpoint returned HTTP ${monthlyResponse.status}`);
-  const monthlyConfig = configFrom(await monthlyResponse.json());
-  const limit = numericValue(monthlyConfig.monthlyLimit);
-  const used = numericValue(monthlyConfig.used);
-  const resetsAt = monthlyConfig.billingPeriodEnd;
-  if (limit === undefined || used === undefined || typeof resetsAt !== "string") {
+
+  let monthlyPayload: unknown;
+  try {
+    monthlyPayload = await monthlyResponse.json();
+  } catch {
+    throw new Error("Invalid Grok monthly billing response");
+  }
+  const monthlyConfig = configFrom(monthlyPayload);
+  const limit = monthlyConfig ? numericValue(monthlyConfig.monthlyLimit) : undefined;
+  const used = monthlyConfig ? numericValue(monthlyConfig.used) : undefined;
+  const resetsAt = monthlyConfig ? validTimestamp(monthlyConfig.billingPeriodEnd) : undefined;
+  if (limit === undefined || used === undefined || limit < 0 || used < 0 || !resetsAt) {
     throw new Error("Invalid Grok monthly billing response");
   }
 
   const usage: BillingUsage = { monthly: { limit, used, resetsAt } };
   try {
-    const weeklyResponse = await fetchImpl(`${BILLING_URL}?format=credits`, { headers });
-    if (weeklyResponse.ok) {
-      const weeklyConfig = configFrom(await weeklyResponse.json());
-      const currentPeriod = weeklyConfig.currentPeriod;
-      const percentUsed = numericValue(weeklyConfig.creditUsagePercent);
-      const weeklyReset =
-        currentPeriod && typeof currentPeriod === "object" && typeof (currentPeriod as Record<string, unknown>).end === "string"
-          ? (currentPeriod as Record<string, unknown>).end as string
-          : weeklyConfig.billingPeriodEnd;
-      if (percentUsed !== undefined && typeof weeklyReset === "string") {
-        usage.weekly = { percentUsed, resetsAt: weeklyReset };
-      }
+    const weeklyResponse = await fetchImpl(`${BILLING_URL}?format=credits`, requestOptions(headers));
+    if (!weeklyResponse.ok) return usage;
+
+    const weeklyConfig = configFrom(await weeklyResponse.json());
+    if (!weeklyConfig) return usage;
+    const currentPeriod = isRecord(weeklyConfig.currentPeriod) ? weeklyConfig.currentPeriod : undefined;
+    const percentUsed = numericValue(weeklyConfig.creditUsagePercent);
+    const weeklyReset = validTimestamp(currentPeriod?.end) ?? validTimestamp(weeklyConfig.billingPeriodEnd);
+    if (percentUsed !== undefined && percentUsed >= 0 && percentUsed <= 100 && weeklyReset) {
+      usage.weekly = { percentUsed, resetsAt: weeklyReset };
     }
   } catch {
-    // Weekly data is optional: a malformed body or unexpected shape from the
-    // credits endpoint must not hide the already-parsed monthly balance.
+    // Weekly data is optional: malformed, unavailable, or timed-out credits
+    // data must not hide the already-parsed monthly balance.
   }
   return usage;
 }

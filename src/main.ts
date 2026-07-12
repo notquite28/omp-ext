@@ -43,6 +43,9 @@ export default function grokBuildExtension(pi: ExtensionAPI): void {
 
   pi.on("before_provider_request", (event, ctx) => {
     if (ctx.model?.provider !== PROVIDER_ID) return;
+    if (ctx.model.baseUrl !== BASE_URL) {
+      throw new Error(`Grok Build requests require the canonical base URL ${BASE_URL}`);
+    }
     // Derive reasoning support from the live model metadata rather than the
     // static catalog, so dynamically discovered reasoning models keep the
     // user-selected thinking effort. `thinking.efforts` is only populated for

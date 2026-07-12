@@ -3,6 +3,18 @@ import type { ExtensionAPI, ProviderConfig } from "@oh-my-pi/pi-coding-agent";
 import grokBuildExtension from "../src/main";
 
 const originalVersion = process.env.GROK_CLI_VERSION;
+const BASE_URL = "https://cli-chat-proxy.grok.com/v1";
+type ProviderHook = (
+  event: { payload: unknown },
+  ctx: {
+    model?: {
+      provider?: string;
+      baseUrl?: string;
+      thinking?: { efforts?: string[] };
+    };
+    sessionManager?: { getSessionId(): string | undefined };
+  },
+) => unknown;
 
 afterEach(() => {
   if (originalVersion === undefined) delete process.env.GROK_CLI_VERSION;
@@ -24,7 +36,7 @@ describe("Grok Build provider", () => {
     grokBuildExtension(pi);
 
     expect(registration?.name).toBe("grok-build");
-    expect(registration?.config.baseUrl).toBe("https://cli-chat-proxy.grok.com/v1");
+    expect(registration?.config.baseUrl).toBe(BASE_URL);
     expect(registration?.config.baseUrl).not.toContain("api.x.ai");
     expect(registration?.config.api).toBe("openai-responses");
     expect(registration?.config.authHeader).toBe(true);
@@ -42,6 +54,7 @@ describe("Grok Build provider", () => {
       reasoning: true,
       contextWindow: 500_000,
       maxTokens: 30_000,
+      compat: { promptCacheSessionHeader: "x-grok-conv-id", supportsReasoningEffort: true },
       headers: {
         "X-XAI-Token-Auth": "xai-grok-cli",
         "x-grok-model-override": "grok-4.5",
@@ -49,5 +62,40 @@ describe("Grok Build provider", () => {
         "x-grok-client-identifier": "grok-pager",
       },
     });
+  });
+
+  test("sanitizes only canonical Grok Build requests", () => {
+    let hook: ProviderHook | undefined;
+    const pi = {
+      registerProvider() {},
+      registerCommand() {},
+      on(_event: string, handler: ProviderHook) {
+        hook = handler;
+      },
+    } as unknown as ExtensionAPI;
+
+    grokBuildExtension(pi);
+    expect(hook).toBeDefined();
+
+    const otherPayload = { reasoning: { effort: "high", summary: "auto" } };
+    expect(
+      hook?.({ payload: otherPayload }, { model: { provider: "other", baseUrl: "https://example.com/v1" } }),
+    ).toBeUndefined();
+    expect(otherPayload).toEqual({ reasoning: { effort: "high", summary: "auto" } });
+
+    const payload = { reasoning: { effort: "minimal", summary: "auto" }, prompt_cache_retention: "24h" };
+    expect(
+      hook?.(
+        { payload },
+        {
+          model: { provider: "grok-build", baseUrl: BASE_URL, thinking: { efforts: ["low", "high"] } },
+          sessionManager: { getSessionId: () => "session-123" },
+        },
+      ),
+    ).toEqual({ reasoning: { effort: "low" }, prompt_cache_key: "session-123" });
+
+    expect(() =>
+      hook?.({ payload: {} }, { model: { provider: "grok-build", baseUrl: "https://example.com/v1" } }),
+    ).toThrow(`Grok Build requests require the canonical base URL ${BASE_URL}`);
   });
 });

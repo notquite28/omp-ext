@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "omp-grok-build",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "description": "Use Grok Build CLI subscription models through cli-chat-proxy.grok.com in OMP",
       "category": "development",
       "tags": ["grok", "xai", "provider", "oauth"],

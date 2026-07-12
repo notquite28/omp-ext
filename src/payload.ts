@@ -20,15 +20,18 @@ export function sanitizeProxyPayload(
     if (reasoning && typeof reasoning === "object") {
       const value = reasoning as Record<string, unknown>;
       if (value.effort === "minimal") value.effort = "low";
+      delete value.summary;
     }
   } else {
     delete next.reasoning;
     delete next.reasoningEffort;
   }
 
-  if (Array.isArray(next.include)) {
-    next.include = next.include.filter((item) => item !== "reasoning.encrypted_content");
-    if (next.include.length === 0) delete next.include;
+  const include = next.include;
+  if (Array.isArray(include)) {
+    const filtered = include.filter((item) => item !== "reasoning.encrypted_content");
+    if (filtered.length === 0) delete next.include;
+    else next.include = filtered;
   }
 
   delete next.prompt_cache_retention;

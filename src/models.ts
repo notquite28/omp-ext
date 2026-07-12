@@ -1,7 +1,27 @@
+import type { FetchImpl } from "@oh-my-pi/pi-ai";
 import type { ProviderModelConfig } from "@oh-my-pi/pi-coding-agent";
 
 const COST_COMPOSER = { input: 3, output: 15, cacheRead: 0.5, cacheWrite: 0 };
 const COST_45 = { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 };
+const MODEL_DISCOVERY_TIMEOUT_MS = 10_000;
+const NON_CHAT_PREFIXES = ["grok-imagine-", "grok-stt-", "grok-voice-"] as const;
+type GrokEffort = NonNullable<ProviderModelConfig["thinking"]>["efforts"][number];
+const EFFORT_BY_VALUE: Record<string, GrokEffort> = {
+  minimal: "minimal" as GrokEffort,
+  low: "low" as GrokEffort,
+  medium: "medium" as GrokEffort,
+  high: "high" as GrokEffort,
+  xhigh: "xhigh" as GrokEffort,
+  max: "max" as GrokEffort,
+};
+
+export const GROK_PROXY_COMPAT = {
+  reasoningEffortMap: { minimal: "low" },
+  includeEncryptedReasoning: false,
+  filterReasoningHistory: true,
+  supportsImageDetailOriginal: false,
+  promptCacheSessionHeader: "x-grok-conv-id",
+} as const;
 
 export interface GrokCliModel extends ProviderModelConfig {
   supportsReasoningEffort: boolean;
@@ -17,7 +37,8 @@ export const GROK_CLI_MODELS: readonly GrokCliModel[] = [
     cost: COST_45,
     contextWindow: 500_000,
     maxTokens: 30_000,
-    thinking: { mode: "openai", efforts: ["low", "medium", "high"] },
+    thinking: { mode: "effort", efforts: ["low", "medium", "high"] as GrokEffort[] },
+    compat: { ...GROK_PROXY_COMPAT, supportsReasoningEffort: true, omitReasoningEffort: false },
   },
   {
     id: "grok-composer-2.5-fast",
@@ -28,69 +49,87 @@ export const GROK_CLI_MODELS: readonly GrokCliModel[] = [
     cost: COST_COMPOSER,
     contextWindow: 200_000,
     maxTokens: 30_000,
+    compat: { ...GROK_PROXY_COMPAT, supportsReasoningEffort: false, omitReasoningEffort: true },
   },
 ];
 
-interface GrokProxyModel {
-  id?: unknown;
-  name?: unknown;
-  context_window?: unknown;
-  supports_reasoning_effort?: unknown;
-  reasoning_efforts?: Array<{ value?: unknown }>;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
 }
 
-
-function effortsFor(model: GrokProxyModel): string[] {
+function effortsFor(model: Record<string, unknown>): GrokEffort[] {
   if (!Array.isArray(model.reasoning_efforts)) return [];
-  return model.reasoning_efforts
-    .map((effort) => effort.value)
-    .filter((value): value is string => typeof value === "string" && value.length > 0);
+  return model.reasoning_efforts.flatMap((effort) => {
+    if (!isRecord(effort) || typeof effort.value !== "string") return [];
+    const value = EFFORT_BY_VALUE[effort.value.trim()];
+    return value ? [value] : [];
+  });
 }
 
-export function mapProxyModel(model: GrokProxyModel): GrokCliModel | undefined {
-  if (typeof model.id !== "string" || !model.id) return undefined;
-  const fallback = GROK_CLI_MODELS.find((entry) => entry.id === model.id);
+export function mapProxyModel(model: unknown): GrokCliModel | undefined {
+  if (!isRecord(model) || typeof model.id !== "string") return undefined;
+
+  const id = model.id.trim();
+  if (!id || NON_CHAT_PREFIXES.some(prefix => id.startsWith(prefix))) return undefined;
+
+  const fallback = GROK_CLI_MODELS.find(entry => entry.id === id);
   const reasoningEfforts = effortsFor(model);
   const supportsReasoning = model.supports_reasoning_effort === true && reasoningEfforts.length > 0;
+  const name = typeof model.name === "string" ? model.name.trim() : undefined;
+  const contextWindow = model.context_window;
   return {
-    id: model.id,
-    name: typeof model.name === "string" && model.name ? model.name : fallback?.name ?? model.id,
+    id,
+    name: name || fallback?.name || id,
     reasoning: supportsReasoning,
     supportsReasoningEffort: supportsReasoning,
-    input: fallback?.input ?? (model.id.includes("composer") ? ["text"] : ["text", "image"]),
+    input: fallback?.input ?? (id.includes("composer") ? ["text"] : ["text", "image"]),
     cost: fallback?.cost ?? COST_45,
     contextWindow:
-      typeof model.context_window === "number" && Number.isFinite(model.context_window)
-        ? model.context_window
+      typeof contextWindow === "number" && Number.isSafeInteger(contextWindow) && contextWindow > 0
+        ? contextWindow
         : fallback?.contextWindow ?? 200_000,
     maxTokens: fallback?.maxTokens ?? 30_000,
-    ...(supportsReasoning ? { thinking: { mode: "openai" as const, efforts: reasoningEfforts } } : {}),
+    compat: {
+      ...GROK_PROXY_COMPAT,
+      supportsReasoningEffort: supportsReasoning,
+      omitReasoningEffort: !supportsReasoning,
+    },
+    ...(supportsReasoning ? { thinking: { mode: "effort" as const, efforts: reasoningEfforts } } : {}),
   };
 }
 
 export async function fetchGrokCliModels(
   apiKey: string | undefined,
   headers: Record<string, string>,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: FetchImpl = fetch,
 ): Promise<readonly GrokCliModel[]> {
   if (!apiKey) return GROK_CLI_MODELS;
-  const response = await fetchImpl("https://cli-chat-proxy.grok.com/v1/models", {
-    headers: {
-      ...headers,
-      accept: "application/json",
-      authorization: `Bearer ${apiKey}`,
-    },
-  });
-  if (!response.ok) return GROK_CLI_MODELS;
+
   try {
-    const payload = await response.json() as { data?: GrokProxyModel[] };
-    const models = Array.isArray(payload.data)
-      ? payload.data.map(mapProxyModel).filter((model): model is GrokCliModel => Boolean(model))
-      : [];
-    return models.length > 0 ? models : GROK_CLI_MODELS;
+    const response = await fetchImpl("https://cli-chat-proxy.grok.com/v1/models", {
+      headers: {
+        ...headers,
+        accept: "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+      redirect: "error",
+      signal: AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT_MS),
+    });
+    if (!response.ok) return GROK_CLI_MODELS;
+
+    const payload = await response.json() as unknown;
+    if (!isRecord(payload) || !Array.isArray(payload.data)) return GROK_CLI_MODELS;
+
+    const models: GrokCliModel[] = [];
+    const seen = new Set<string>();
+    for (const item of payload.data) {
+      const model = mapProxyModel(item);
+      if (!model || seen.has(model.id)) continue;
+      seen.add(model.id);
+      models.push(model);
+    }
+    return models;
   } catch {
-    // HTTP 200 with an invalid/HTML body or an unexpected shape: fall back to
-    // the static catalog instead of breaking dynamic model refresh.
     return GROK_CLI_MODELS;
   }
 }
