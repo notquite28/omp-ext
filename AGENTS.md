@@ -6,7 +6,7 @@ This repository is an **Oh My Pi marketplace** (`omp-ext`) that ships **two inde
 
 | Path | Package | Role |
 | --- | --- | --- |
-| `plugins/omp-grok-build/` | `omp-grok-build` | Grok Build CLI subscription provider (`grok-build/*`) |
+| `plugins/omp-grok-build/` | `omp-grok-build` | Grok Build CLI provider (`grok-build/*`, usage, Imagine) |
 | `plugins/omp-rewind/` | `omp-rewind` | Git checkpoint/rewind (`/rewind`, Esc+Esc) |
 
 Do **not** merge the two into one `package.json` / one `omp.extensions` entry. Users install them separately:
@@ -18,9 +18,9 @@ omp-rewind@omp-ext
 
 ### Grok plugin (`plugins/omp-grok-build`)
 
-Lets OMP use a **Grok Build CLI subscription** through the CLI entitlement proxy, not the public xAI API.
+Lets OMP use a **Grok Build CLI subscription** through the CLI entitlement proxy for chat/models/billing. Image generation intentionally calls the public xAI images API with the same OAuth token (same split as upstream `pi-grok-cli`).
 
-Do **not** route inference or billing to `https://api.x.ai`; target:
+Do **not** route chat inference or billing to `https://api.x.ai`; target:
 
 ```text
 https://cli-chat-proxy.grok.com/v1
@@ -31,7 +31,8 @@ OMP host
   └─ plugins/omp-grok-build/package.json → omp.extensions → src/main.ts
        ├─ registerProvider("grok-build")
        ├─ on("before_provider_request") → sanitizeProxyPayload
-       └─ registerCommand("grok-build-usage") → GET /v1/billing
+       ├─ registerCommand("grok-build-usage") → GET /v1/billing
+       └─ registerImagineCommand → /grok-build-imagine + image_gen tool
 ```
 
 ### Rewind plugin (`plugins/omp-rewind`)
@@ -90,9 +91,9 @@ omp plugin upgrade
 
 ### Grok (`plugins/omp-grok-build`)
 
-- One concern per file: `main.ts`, `auth.ts`, `models.ts`, `payload.ts`, `usage.ts`.
-- Provider id: `grok-build`. Command id: `grok-build-usage`.
-- Never switch base URL to public `api.x.ai`.
+- One concern per file: `main.ts`, `auth.ts`, `models.ts`, `payload.ts`, `usage.ts`, `imagine/*`.
+- Provider id: `grok-build`. Commands: `grok-build-usage`, `grok-build-imagine`. Tool: `image_gen`.
+- Never switch chat/billing base URL to public `api.x.ai`. Imagine may call `api.x.ai/v1/images/generations` only.
 
 ### Rewind (`plugins/omp-rewind`)
 
@@ -103,7 +104,7 @@ omp plugin upgrade
 
 ## Testing
 
-- Grok: `bun test` under `plugins/omp-grok-build` before behavior changes to auth/provider/models/payload/usage.
+- Grok: `bun test` under `plugins/omp-grok-build` before behavior changes to auth/provider/models/payload/usage/imagine.
 - Rewind: `bun tests/core.test.ts` for git ops + mutating-tool set.
 - CI runs both plus catalog/package version alignment.
 

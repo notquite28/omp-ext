@@ -4,7 +4,7 @@ Oh My Pi marketplace containing **two separate plugins**:
 
 | Plugin | What it does |
 | --- | --- |
-| [`omp-grok-build`](./plugins/omp-grok-build) | Grok Build CLI subscription provider (`grok-build/*` models, OAuth, `/grok-build-usage`) |
+| [`omp-grok-build`](./plugins/omp-grok-build) | Grok Build CLI provider (`grok-build/*`), OAuth, `/grok-build-usage`, `/grok-build-imagine` + `image_gen` |
 | [`omp-rewind`](./plugins/omp-rewind) | Git worktree checkpoints — `/rewind`, Esc+Esc, safe restore, redo stack |
 
 Repo layout:

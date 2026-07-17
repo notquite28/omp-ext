@@ -12,13 +12,15 @@
     {
       "name": "omp-grok-build",
       "version": "0.1.2",
-      "description": "Use Grok Build CLI subscription models through cli-chat-proxy.grok.com in OMP",
+      "description": "Grok Build CLI models via cli-chat-proxy, usage bars, and Grok Imagine (/grok-build-imagine, image_gen)",
       "category": "development",
       "tags": [
         "grok",
         "xai",
         "provider",
-        "oauth"
+        "oauth",
+        "imagine",
+        "image"
       ],
       "source": "./plugins/omp-grok-build"
     },
