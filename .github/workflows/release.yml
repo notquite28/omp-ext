@@ -37,31 +37,17 @@ jobs:
 
       - name: Test omp-rewind
         working-directory: plugins/omp-rewind
-        run: bun tests/core.test.ts
+        run: bun run test
 
-      - name: Validate catalog and tag
+      - name: Validate marketplace catalog
+        run: bun scripts/validate-marketplace.ts
+
+      - name: Validate tag matches marketplace metadata
         id: version
         run: |
           tag="${GITHUB_REF_NAME#v}"
           marketplace="$(bun -e "const m = await import('./.claude-plugin/marketplace.json', { with: { type: 'json' } }); console.log(m.default.metadata?.version ?? '')")"
           root="$(bun -e "const p = await import('./package.json', { with: { type: 'json' } }); console.log(p.default.version)")"
-
-          bun -e '
-            import catalog from "./.claude-plugin/marketplace.json" with { type: "json" };
-            import { readFileSync } from "fs";
-            let failed = false;
-            for (const plugin of catalog.plugins) {
-              const src = String(plugin.source).replace(/^\.\//, "");
-              const pkg = JSON.parse(readFileSync(`${src}/package.json`, "utf8"));
-              if (pkg.name !== plugin.name || pkg.version !== plugin.version) {
-                console.error(`mismatch ${plugin.name}: catalog ${plugin.version} package ${pkg.name}@${pkg.version}`);
-                failed = true;
-              } else {
-                console.log(`ok ${plugin.name}@${plugin.version}`);
-              }
-            }
-            if (failed) process.exit(1);
-          '
 
           if [ -n "$marketplace" ] && [ "$marketplace" != "$tag" ]; then
             echo "Tag v$tag does not match marketplace metadata.version $marketplace" >&2

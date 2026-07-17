@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Plugin tests
+  marketplace:
+    name: Marketplace catalog
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -22,40 +22,102 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Install omp-grok-build dependencies
-        working-directory: plugins/omp-grok-build
-        run: bun install --frozen-lockfile
+      - name: Validate marketplace catalog
+        run: bun scripts/validate-marketplace.ts
 
-      - name: Typecheck omp-grok-build
-        working-directory: plugins/omp-grok-build
-        run: bun run typecheck
-
-      - name: Test omp-grok-build
-        working-directory: plugins/omp-grok-build
-        run: bun test
-
-      - name: Test omp-rewind
-        working-directory: plugins/omp-rewind
-        run: bun tests/core.test.ts
-
-      - name: Validate marketplace catalog versions
+      - name: Assert multi-plugin sources
         run: |
           bun -e '
             import catalog from "./.claude-plugin/marketplace.json" with { type: "json" };
-            import { readFileSync } from "fs";
-            let failed = false;
-            for (const plugin of catalog.plugins) {
-              const src = String(plugin.source).replace(/^\.\//, "");
-              const pkg = JSON.parse(readFileSync(`${src}/package.json`, "utf8"));
-              if (pkg.name !== plugin.name) {
-                console.error(`name mismatch: catalog ${plugin.name} vs package ${pkg.name}`);
-                failed = true;
-              }
-              if (pkg.version !== plugin.version) {
-                console.error(`version mismatch for ${plugin.name}: catalog ${plugin.version} vs package ${pkg.version}`);
-                failed = true;
-              }
-              console.log(`ok ${plugin.name}@${plugin.version} -> ${plugin.source}`);
+            const sources = catalog.plugins.map((p) => p.source);
+            if (sources.some((s) => s === "./")) {
+              console.error("legacy source ./ is not allowed; use ./plugins/<name>");
+              process.exit(1);
             }
-            if (failed) process.exit(1);
+            for (const expected of ["./plugins/omp-grok-build", "./plugins/omp-rewind"]) {
+              if (!sources.includes(expected)) {
+                console.error("missing source", expected, "have", sources);
+                process.exit(1);
+              }
+            }
+            console.log("sources ok:", sources.join(", "));
           '
+
+  omp-grok-build:
+    name: omp-grok-build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/omp-grok-build
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Unit tests
+        run: bun test
+
+      - name: Manifest smoke
+        run: |
+          bun -e '
+            import pkg from "./package.json" with { type: "json" };
+            import { existsSync } from "fs";
+            if (pkg.name !== "omp-grok-build") throw new Error(pkg.name);
+            const entries = pkg.omp?.extensions ?? [];
+            if (!entries.includes("./src/main.ts")) throw new Error(String(entries));
+            for (const e of entries) if (!existsSync(e)) throw new Error("missing " + e);
+            console.log("manifest ok", pkg.name, pkg.version, entries);
+          '
+
+  omp-rewind:
+    name: omp-rewind
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/omp-rewind
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Unit tests (core git ops)
+        run: bun run test
+
+      - name: Manifest smoke
+        run: |
+          bun -e '
+            import pkg from "./package.json" with { type: "json" };
+            import { existsSync } from "fs";
+            if (pkg.name !== "omp-rewind") throw new Error(pkg.name);
+            const entries = pkg.omp?.extensions ?? [];
+            if (!entries.includes("./src/index.ts")) throw new Error(String(entries));
+            for (const e of entries) if (!existsSync(e)) throw new Error("missing " + e);
+            // MUTATING_TOOLS membership is covered by core tests; assert entry factory exists
+            const src = await Bun.file("./src/index.ts").text();
+            if (!src.includes("export default function")) throw new Error("missing default export factory");
+            if (!src.includes("@oh-my-pi/pi-coding-agent")) throw new Error("missing OMP host import");
+            if (src.includes("@mariozechner/pi-coding-agent")) throw new Error("legacy host import present");
+            console.log("manifest ok", pkg.name, pkg.version, entries);
+          '
+
+  # Aggregate gate so branch protection can require a single job name if desired
+  ci-ok:
+    name: All checks
+    runs-on: ubuntu-latest
+    needs: [marketplace, omp-grok-build, omp-rewind]
+    steps:
+      - run: echo "marketplace + omp-grok-build + omp-rewind passed"
