@@ -4,7 +4,7 @@ Git checkpoint/rewind extension for [Oh My Pi](https://omp.sh). Creates automati
 
 Port of [pi-rewind](https://github.com/arpagon/pi-rewind) for OMP: `omp.extensions` manifest, `@oh-my-pi/pi-coding-agent` types, and expanded mutating-tool coverage for OMP builtins (`ast_edit`, `eval`).
 
-Shipped from the multi-plugin marketplace as **`omp-rewind@omp-grok-build-marketplace`** (sibling of `omp-grok-build`, not the same package).
+Shipped from the multi-plugin marketplace as **`omp-rewind@omp-ext`** (sibling of `omp-grok-build`, not the same package).
 
 > **Not the same as OMP’s built-in `checkpoint`/`rewind` tools.** Those (setting `checkpoint.enabled`) collapse conversation history only. This extension stores **git worktree snapshots** and exposes `/rewind` + Esc+Esc for restore. Keep both; they solve different problems.
 
@@ -29,12 +29,12 @@ Shipped from the multi-plugin marketplace as **`omp-rewind@omp-grok-build-market
 
 ```bash
 # Marketplace (preferred for updates)
-omp plugin marketplace add notquite28/omp-grok-build
-omp install omp-rewind@omp-grok-build-marketplace
+omp plugin marketplace add notquite28/omp-ext
+omp install omp-rewind@omp-ext
 
 # update later
 omp plugin marketplace update
-omp plugin upgrade omp-rewind@omp-grok-build-marketplace
+omp plugin upgrade omp-rewind@omp-ext
 
 # local link while developing this monorepo
 omp install ./plugins/omp-rewind --force

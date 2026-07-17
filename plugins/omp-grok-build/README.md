@@ -14,15 +14,15 @@ OAuth only:              https://auth.x.ai
 This package lives under the multi-plugin marketplace repo. Catalog entry:
 
 ```text
-omp-grok-build@omp-grok-build-marketplace
+omp-grok-build@omp-ext
 source: ./plugins/omp-grok-build
 ```
 
 ## Install
 
 ```bash
-omp plugin marketplace add notquite28/omp-grok-build
-omp install omp-grok-build@omp-grok-build-marketplace
+omp plugin marketplace add notquite28/omp-ext
+omp install omp-grok-build@omp-ext
 
 # local link while developing
 omp install ./plugins/omp-grok-build --force
@@ -31,9 +31,9 @@ omp install ./plugins/omp-grok-build --force
 With profile alias `grk` (`omp --profile grok-build --alias grk`):
 
 ```bash
-grk install omp-grok-build@omp-grok-build-marketplace
+grk install omp-grok-build@omp-ext
 grk plugin marketplace update
-grk plugin upgrade omp-grok-build@omp-grok-build-marketplace
+grk plugin upgrade omp-grok-build@omp-ext
 ```
 
 ## Development

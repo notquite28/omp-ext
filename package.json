@@ -1,8 +1,8 @@
 {
-  "name": "omp-grok-build-marketplace",
+  "name": "omp-ext",
   "version": "0.2.0",
   "private": true,
-  "description": "Marketplace repo for omp-grok-build and omp-rewind plugins",
+  "description": "Oh My Pi extension marketplace (omp-grok-build, omp-rewind, \u2026)",
   "type": "module",
   "scripts": {
     "test": "bun run test:grok && bun run test:rewind",

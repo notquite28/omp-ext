@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This repository is an **Oh My Pi marketplace** (`omp-grok-build-marketplace`) that ships **two independent plugins**:
+This repository is an **Oh My Pi marketplace** (`omp-ext`) that ships **two independent plugins**:
 
 | Path | Package | Role |
 | --- | --- | --- |
@@ -12,8 +12,8 @@ This repository is an **Oh My Pi marketplace** (`omp-grok-build-marketplace`) th
 Do **not** merge the two into one `package.json` / one `omp.extensions` entry. Users install them separately:
 
 ```text
-omp-grok-build@omp-grok-build-marketplace
-omp-rewind@omp-grok-build-marketplace
+omp-grok-build@omp-ext
+omp-rewind@omp-ext
 ```
 
 ### Grok plugin (`plugins/omp-grok-build`)
@@ -75,7 +75,7 @@ omp install ./plugins/omp-rewind --force
 
 # Marketplace flow (after push / local marketplace add)
 omp plugin marketplace update
-omp install omp-rewind@omp-grok-build-marketplace
+omp install omp-rewind@omp-ext
 omp plugin upgrade
 ```
 

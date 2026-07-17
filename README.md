@@ -1,4 +1,4 @@
-# omp-grok-build marketplace
+# omp-ext
 
 Oh My Pi marketplace containing **two separate plugins**:
 
@@ -22,20 +22,20 @@ Repo layout:
 
 ```bash
 # once per profile
-omp plugin marketplace add notquite28/omp-grok-build
+omp plugin marketplace add notquite28/omp-ext
 # or with the grk profile alias:
-grk plugin marketplace add notquite28/omp-grok-build
+grk plugin marketplace add notquite28/omp-ext
 
 # install plugins independently
-omp install omp-grok-build@omp-grok-build-marketplace
-omp install omp-rewind@omp-grok-build-marketplace
+omp install omp-grok-build@omp-ext
+omp install omp-rewind@omp-ext
 ```
 
 With the isolated Grok profile alias (`omp --profile grok-build --alias grk`):
 
 ```bash
-grk install omp-grok-build@omp-grok-build-marketplace
-grk install omp-rewind@omp-grok-build-marketplace
+grk install omp-grok-build@omp-ext
+grk install omp-rewind@omp-ext
 ```
 
 ### Update
@@ -44,8 +44,8 @@ grk install omp-rewind@omp-grok-build-marketplace
 grk plugin marketplace update
 grk plugin upgrade
 # or one plugin:
-grk plugin upgrade omp-rewind@omp-grok-build-marketplace
-grk plugin upgrade omp-grok-build@omp-grok-build-marketplace
+grk plugin upgrade omp-rewind@omp-ext
+grk plugin upgrade omp-grok-build@omp-ext
 ```
 
 `marketplace update` refreshes the catalog from GitHub; `plugin upgrade` applies newer catalog versions to installed marketplace plugins.
@@ -93,7 +93,7 @@ Both plugins are TypeScript **extension factories** (`package.json` → `omp.ext
 ```bash
 omp install ./plugins/omp-rewind --force
 # or
-omp install github:notquite28/omp-grok-build
+omp install github:notquite28/omp-ext
 ```
 
 and open an issue — marketplace install is the intended path for this catalog.
