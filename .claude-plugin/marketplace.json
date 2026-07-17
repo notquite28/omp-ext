@@ -5,7 +5,8 @@
     "name": "omp-grok-build maintainers"
   },
   "metadata": {
-    "description": "Grok Build CLI subscription provider for Oh My Pi"
+    "description": "OMP plugins: Grok Build provider and git rewind/checkpoints",
+    "version": "0.2.0"
   },
   "plugins": [
     {
@@ -14,7 +15,15 @@
       "description": "Use Grok Build CLI subscription models through cli-chat-proxy.grok.com in OMP",
       "category": "development",
       "tags": ["grok", "xai", "provider", "oauth"],
-      "source": "./"
+      "source": "./plugins/omp-grok-build"
+    },
+    {
+      "name": "omp-rewind",
+      "version": "0.5.0",
+      "description": "Git checkpoint/rewind for Oh My Pi — /rewind, Esc+Esc, safe restore, redo stack",
+      "category": "development",
+      "tags": ["rewind", "checkpoint", "undo", "git", "omp-extension"],
+      "source": "./plugins/omp-rewind"
     }
   ]
 }

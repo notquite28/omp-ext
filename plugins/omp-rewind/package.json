@@ -1,0 +1,34 @@
+{
+  "name": "omp-rewind",
+  "version": "0.5.0",
+  "description": "Git checkpoint/rewind extension for Oh My Pi — /rewind, Esc+Esc, safe restore, redo stack",
+  "license": "MIT",
+  "type": "module",
+  "author": "arpagon",
+  "keywords": [
+    "oh-my-pi",
+    "omp",
+    "omp-extension",
+    "pi-extension",
+    "checkpoint",
+    "rewind",
+    "undo",
+    "git"
+  ],
+  "files": ["src/", "README.md", "LICENSE"],
+  "omp": {
+    "extensions": ["./src/index.ts"]
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-coding-agent": "^16"
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-coding-agent": "^16"
+  },
+  "scripts": {
+    "test": "bun tests/core.test.ts"
+  }
+}

@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    name: Bun tests
+    name: Plugin tests
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -22,11 +22,40 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Install dependencies
+      - name: Install omp-grok-build dependencies
+        working-directory: plugins/omp-grok-build
         run: bun install --frozen-lockfile
 
-      - name: Run typecheck
+      - name: Typecheck omp-grok-build
+        working-directory: plugins/omp-grok-build
         run: bun run typecheck
 
-      - name: Run tests
+      - name: Test omp-grok-build
+        working-directory: plugins/omp-grok-build
         run: bun test
+
+      - name: Test omp-rewind
+        working-directory: plugins/omp-rewind
+        run: bun tests/core.test.ts
+
+      - name: Validate marketplace catalog versions
+        run: |
+          bun -e '
+            import catalog from "./.claude-plugin/marketplace.json" with { type: "json" };
+            import { readFileSync } from "fs";
+            let failed = false;
+            for (const plugin of catalog.plugins) {
+              const src = String(plugin.source).replace(/^\.\//, "");
+              const pkg = JSON.parse(readFileSync(`${src}/package.json`, "utf8"));
+              if (pkg.name !== plugin.name) {
+                console.error(`name mismatch: catalog ${plugin.name} vs package ${pkg.name}`);
+                failed = true;
+              }
+              if (pkg.version !== plugin.version) {
+                console.error(`version mismatch for ${plugin.name}: catalog ${plugin.version} vs package ${pkg.version}`);
+                failed = true;
+              }
+              console.log(`ok ${plugin.name}@${plugin.version} -> ${plugin.source}`);
+            }
+            if (failed) process.exit(1);
+          '
