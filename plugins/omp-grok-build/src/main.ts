@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { loginToGrok, refreshGrokCredentials, resolveGrokVersion } from "./auth";
 import { registerUsageCommand } from "./usage";
+import { registerImagineCommand } from "./imagine";
 import { fetchGrokCliModels } from "./models";
 import { sanitizeProxyPayload } from "./payload";
 
@@ -59,4 +60,5 @@ export default function grokBuildExtension(pi: ExtensionAPI): void {
   });
 
   registerUsageCommand(pi);
+  registerImagineCommand(pi);
 }

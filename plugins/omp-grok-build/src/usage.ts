@@ -1,5 +1,5 @@
 import type { FetchImpl } from "@oh-my-pi/pi-ai";
-import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { loadGrokCliCredentials } from "./auth";
 
 const BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing";
@@ -124,7 +124,7 @@ export function formatBillingUsage(usage: BillingUsage): string {
 
 const PROVIDER_ID = "grok-build";
 
-async function resolveUsageToken(ctx: ExtensionCommandContext): Promise<string | undefined> {
+export async function resolveUsageToken(ctx: ExtensionContext): Promise<string | undefined> {
   // Prefer OMP's provider auth storage: it covers credentials created by
   // `/login grok-build` and runs them through the provider refresh pipeline,
   // re-minting expired access tokens instead of returning a billing 401.

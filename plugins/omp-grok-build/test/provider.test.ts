@@ -30,6 +30,8 @@ describe("Grok Build provider", () => {
         registration = { name, config };
       },
       registerCommand() {},
+      registerTool() {},
+      zod: { z: { object: () => ({}), string: () => ({ describe() { return this; }, optional() { return this; } }) } },
       on() {},
     } as unknown as ExtensionAPI;
 
@@ -69,6 +71,8 @@ describe("Grok Build provider", () => {
     const pi = {
       registerProvider() {},
       registerCommand() {},
+      registerTool() {},
+      zod: { z: { object: () => ({}), string: () => ({ describe() { return this; }, optional() { return this; } }) } },
       on(_event: string, handler: ProviderHook) {
         hook = handler;
       },

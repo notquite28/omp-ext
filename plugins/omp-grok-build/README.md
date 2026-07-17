@@ -2,9 +2,9 @@
 
 Use a **Grok Build CLI subscription** from [Oh My Pi](https://omp.sh) via the Grok CLI entitlement proxy.
 
-This extension registers OMP provider `grok-build`, reuses the official Grok CLI login when available, supports native device-code OAuth, discovers the live Grok CLI model catalog, and adds `/grok-build-usage` for subscription billing.
+This extension registers OMP provider `grok-build`, reuses the official Grok CLI login when available, supports native device-code OAuth, discovers the live Grok CLI model catalog, adds `/grok-build-usage` for subscription billing, and `/grok-build-imagine` plus an `image_gen` tool for Grok Imagine.
 
-It does **not** use the public xAI inference API.
+Chat inference and billing stay on the CLI entitlement proxy. Image generation uses the public xAI images API with the same Grok Build OAuth token (same split as upstream `pi-grok-cli`).
 
 ```text
 Inference/model/billing: https://cli-chat-proxy.grok.com/v1
@@ -72,5 +72,18 @@ bun test
 grok-build/grok-4.5
 grok-build/grok-composer-2.5-fast
 ```
+
+## Imagine
+
+```text
+/grok-build-imagine <prompt> [--aspect <ratio>] [--out <path>] [--resolution 1k]
+```
+
+- Auth: OMP `modelRegistry.getApiKeyForProvider("grok-build")` (with CLI credential fallback), same path as usage.
+- Save: under `<sessionDir>/<sessionId>/images/` when the session is on disk; otherwise tmp fallback.
+- Display: `pi.sendUserMessage([{type:"image",...},{type:"text",...}])` so the image is visible to user and model.
+- Tool: `image_gen` is registered for model-callable generation (`pi.registerTool` + `pi.zod`).
+
+Env overrides: `GROK_BUILD_IMAGINE_BASE_URL` (default `https://api.x.ai/v1`), `GROK_BUILD_IMAGINE_MODEL` (default `grok-imagine-image-quality`).
 
 See the repository root README for marketplace layout and dual-plugin install.
