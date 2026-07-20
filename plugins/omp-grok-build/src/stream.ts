@@ -1,18 +1,81 @@
 import { streamSimple } from "@oh-my-pi/pi-ai";
 import type { Api, Context, FetchImpl, Model, SimpleStreamOptions } from "@oh-my-pi/pi-ai";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
 import { requestHeaders } from "./headers";
 
 const BASE_URL = "https://cli-chat-proxy.grok.com/v1";
 
 /**
+ * Host `buildModel` leaves custom API ids with `compat: undefined`, and the
+ * Responses transport crashes reading fields on that. We cannot import
+ * `@oh-my-pi/pi-catalog/build` from marketplace installs (host only remaps
+ * pi-ai / pi-coding-agent / …, not pi-catalog). Rebuild a request-time model
+ * as `openai-responses` with a complete compat object instead.
+ */
+function toOpenAIResponsesModel(model: Model<Api>): Model<Api> {
+  const sparse = (model.compatConfig ?? model.compat ?? {}) as Record<string, unknown>;
+  const supportsReasoningEffort =
+    typeof sparse.supportsReasoningEffort === "boolean"
+      ? sparse.supportsReasoningEffort
+      : Boolean(model.reasoning);
+  const compat = {
+    supportsDeveloperRole: false,
+    supportsStrictMode: false,
+    supportsReasoningEffort,
+    supportsLongPromptCacheRetention: false,
+    strictResponsesPairing: false,
+    supportsImageDetailOriginal: false,
+    reasoningEffortMap: { minimal: "low" },
+    supportsReasoningParams: true,
+    supportsSamplingParams: true,
+    thinkingFormat: "openai",
+    reasoningDisableMode: "lowest-effort",
+    omitReasoningEffort: !supportsReasoningEffort,
+    includeEncryptedReasoning: false,
+    filterReasoningHistory: true,
+    disableReasoningOnForcedToolChoice: false,
+    disableReasoningOnToolChoice: false,
+    supportsToolChoice: true,
+    supportsForcedToolChoice: true,
+    supportsNamedToolChoice: true,
+    reasoningContentField: "reasoning_content",
+    requiresReasoningContentForToolCalls: false,
+    requiresReasoningContentForAllAssistantTurns: false,
+    allowsSyntheticReasoningContentForToolCalls: true,
+    replayReasoningContent: false,
+    qwenPreserveThinking: false,
+    requiresThinkingAsText: false,
+    requiresMistralToolIds: false,
+    requiresToolResultName: false,
+    requiresAssistantAfterToolResult: false,
+    requiresAssistantContentForToolCalls: false,
+    openRouterRouting: undefined,
+    isOpenRouterHost: false,
+    wireModelIdMode: "raw",
+    alwaysSendMaxTokens: false,
+    enableGeminiThinkingLoopGuard: false,
+    supportsObfuscationOptOut: false,
+    stripDeepseekSpecialTokens: false,
+    reasoningDeltasMayBeCumulative: false,
+    emptyLengthFinishIsContextError: false,
+    usesOpenAIToolCallIdLimit: false,
+    promptCacheSessionHeader: "x-grok-conv-id",
+    ...sparse,
+  };
+
+  return {
+    ...model,
+    api: "openai-responses",
+    compat,
+    compatConfig: model.compatConfig,
+  } as Model<Api>;
+}
+
+/**
  * Custom-API stream handler.
  *
- * Host `buildModel` leaves custom API ids with `compat: undefined`, and the
- * Responses transport crashes on that. Rebuild as `openai-responses` (with the
- * sparse `compatConfig` overrides) and inject CLI-proxy identity headers on the
- * wire via a fetch wrapper so they never need to live on cached model specs.
+ * Injects CLI-proxy identity headers on the wire via a fetch wrapper so they
+ * never need to live on cached model specs (host drops header-bearing dynamic
+ * models on offline hydrate).
  */
 export function streamGrokBuildResponses(
   model: Model<Api>,
@@ -37,15 +100,7 @@ export function streamGrokBuildResponses(
     innerFetch.preconnect ? { preconnect: innerFetch.preconnect } : {},
   );
 
-  // Rebuild as built-in openai-responses so streamSimple dispatches to the
-  // native Responses transport with a fully resolved compat record.
-  const responsesModel = buildModel({
-    ...model,
-    api: "openai-responses",
-    compat: model.compatConfig,
-  } as ModelSpec<"openai-responses">) as Model<Api>;
-
-  return streamSimple(responsesModel, context, {
+  return streamSimple(toOpenAIResponsesModel(model), context, {
     ...options,
     fetch: wrappedFetch,
   });
