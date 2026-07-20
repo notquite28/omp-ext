@@ -6,7 +6,7 @@
  * Run: bun tests/core.test.ts
  */
 
-import { mkdtemp, rm, writeFile, mkdir, readFile, stat } from "fs/promises";
+import { chmod, mkdtemp, rm, writeFile, mkdir, readFile, stat } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -15,16 +15,18 @@ import {
   getRepoRoot,
   createCheckpoint,
   restoreCheckpoint,
+  compareCheckpointToCurrent,
   loadCheckpointFromRef,
   listCheckpointRefs,
   loadAllCheckpoints,
   deleteCheckpoint,
   pruneCheckpoints,
-  findClosestCheckpoint,
+  pruneOldSessions,
   shouldIgnoreForSnapshot,
   sanitizeForRef,
   isSafeId,
   MUTATING_TOOLS,
+  MAX_UNTRACKED_FILE_SIZE,
   type CreateCheckpointOpts,
   type CheckpointData,
 } from "../src/core.js";
@@ -254,6 +256,147 @@ async function runTests() {
     assert(!hasNM, "node_modules excluded from preexisting list");
   });
 
+
+  await test("restore preserves HEAD while restoring staged and worktree trees", async () => {
+    const restoreRepo = await createTempRepo();
+    try {
+      await writeFile(join(restoreRepo, "state.txt"), "commit A\n");
+      await git("add state.txt", restoreRepo);
+      await git('commit -m "commit A"', restoreRepo);
+      await writeFile(join(restoreRepo, "state.txt"), "staged checkpoint\n");
+      await git("add state.txt", restoreRepo);
+      await writeFile(join(restoreRepo, "state.txt"), "worktree checkpoint\n");
+      const checkpoint = await createCheckpoint(makeOpts(restoreRepo, {
+        id: "head-preserving",
+      }));
+
+      await writeFile(join(restoreRepo, "state.txt"), "commit B\n");
+      await git("add state.txt", restoreRepo);
+      await git('commit -m "commit B"', restoreRepo);
+      const headBefore = await git("rev-parse HEAD", restoreRepo);
+      const branchBefore = await git("symbolic-ref -q HEAD", restoreRepo);
+      const branchTipBefore = await git(`rev-parse ${branchBefore}`, restoreRepo);
+
+      await restoreCheckpoint(restoreRepo, checkpoint);
+
+      assertEqual(
+        await readFile(join(restoreRepo, "state.txt"), "utf-8"),
+        "worktree checkpoint\n",
+        "worktree bytes restored",
+      );
+      assertEqual(await git("write-tree", restoreRepo), checkpoint.indexTreeSha, "index restored");
+      const comparison = await compareCheckpointToCurrent(restoreRepo, checkpoint);
+      assert(!comparison.worktreeChanged, "restored worktree matches checkpoint");
+      assert(!comparison.indexChanged, "restored index matches checkpoint");
+      assertEqual(await git("rev-parse HEAD", restoreRepo), headBefore, "HEAD unchanged");
+      assertEqual(await git("symbolic-ref -q HEAD", restoreRepo), branchBefore, "branch unchanged");
+      assertEqual(
+        await git(`rev-parse ${branchBefore}`, restoreRepo),
+        branchTipBefore,
+        "branch tip unchanged",
+      );
+    } finally {
+      await cleanupRepo(restoreRepo);
+    }
+  });
+
+  await test("restore propagates git clean failures", async () => {
+    const cleanRepo = await createTempRepo();
+    const lockedDir = join(cleanRepo, "locked");
+    try {
+      const checkpoint = await createCheckpoint(makeOpts(cleanRepo, { id: "clean-failure" }));
+      await mkdir(lockedDir);
+      await writeFile(join(lockedDir, "post.txt"), "cannot clean");
+      await chmod(lockedDir, 0o555);
+      let rejected = false;
+      try {
+        await restoreCheckpoint(cleanRepo, checkpoint);
+      } catch {
+        rejected = true;
+      }
+      assert(rejected, "git clean failure rejects restore");
+    } finally {
+      await chmod(lockedDir, 0o755).catch(() => {});
+      await cleanupRepo(cleanRepo);
+    }
+  });
+
+  await test("checkpoint identity metadata roundtrips and legacy metadata stays absent", async () => {
+    const identity = await createCheckpoint(makeOpts(repo, {
+      id: "identity-roundtrip",
+      conversationLeafId: "leaf-1",
+      conversationLeafParentId: null,
+      restoreTargetId: "target-1",
+    }));
+    const loadedIdentity = await loadCheckpointFromRef(repo, identity.id);
+    assertEqual(loadedIdentity?.conversationLeafId, "leaf-1", "leaf ID");
+    assertEqual(loadedIdentity?.conversationLeafParentId, null, "nullable parent");
+    assertEqual(loadedIdentity?.restoreTargetId, "target-1", "restore linkage");
+
+    const legacy = await createCheckpoint(makeOpts(repo, { id: "legacy-metadata" }));
+    const loadedLegacy = await loadCheckpointFromRef(repo, legacy.id);
+    assertEqual(loadedLegacy?.conversationLeafId, undefined, "legacy leaf omitted");
+    assertEqual(loadedLegacy?.conversationLeafParentId, undefined, "legacy parent omitted");
+    assertEqual(loadedLegacy?.restoreTargetId, undefined, "legacy linkage omitted");
+  });
+
+  await test("workspace comparison separates index, worktree, untracked, and skipped paths", async () => {
+    const comparisonRepo = await createTempRepo();
+    try {
+      await writeFile(join(comparisonRepo, "tracked.txt"), "base\n");
+      await git("add tracked.txt", comparisonRepo);
+      await git('commit -m "tracked baseline"', comparisonRepo);
+      const checkpoint = await createCheckpoint(makeOpts(comparisonRepo, {
+        id: "comparison-baseline",
+      }));
+
+      await writeFile(join(comparisonRepo, "tracked.txt"), "staged\n");
+      await git("add tracked.txt", comparisonRepo);
+      await writeFile(join(comparisonRepo, "tracked.txt"), "base\n");
+      let comparison = await compareCheckpointToCurrent(comparisonRepo, checkpoint);
+      assert(!comparison.worktreeChanged, "staged-only change leaves worktree tree unchanged");
+      assert(comparison.indexChanged, "staged-only change changes index");
+      assert(comparison.indexStat.includes("tracked.txt"), "index stat names staged path");
+
+      await git("reset --hard HEAD", comparisonRepo);
+      await writeFile(join(comparisonRepo, "tracked.txt"), "unstaged\n");
+      comparison = await compareCheckpointToCurrent(comparisonRepo, checkpoint);
+      assert(comparison.worktreeChanged, "unstaged change changes worktree");
+      assert(!comparison.indexChanged, "unstaged change leaves index");
+      assert(comparison.worktreeStat.includes("tracked.txt"), "worktree stat names unstaged path");
+
+      await git("reset --hard HEAD", comparisonRepo);
+      await writeFile(join(comparisonRepo, "untracked.txt"), "untracked\n");
+      comparison = await compareCheckpointToCurrent(comparisonRepo, checkpoint);
+      assert(comparison.worktreeChanged, "eligible untracked change changes worktree");
+      assert(comparison.worktreeStat.includes("untracked.txt"), "worktree stat names untracked path");
+
+      await writeFile(
+        join(comparisonRepo, "large.bin"),
+        Buffer.alloc(MAX_UNTRACKED_FILE_SIZE + 1),
+      );
+      await mkdir(join(comparisonRepo, "bulk"));
+      await Promise.all(
+        Array.from({ length: 200 }, (_, index) =>
+          writeFile(join(comparisonRepo, "bulk", `${index}.txt`), "x")),
+      );
+      await mkdir(join(comparisonRepo, "node_modules"));
+      await writeFile(join(comparisonRepo, "node_modules", "ignored.js"), "ignored");
+      comparison = await compareCheckpointToCurrent(comparisonRepo, checkpoint);
+      assert(comparison.skippedLargeFiles.includes("large.bin"), "large file reported");
+      assert(comparison.skippedLargeDirs.includes("bulk"), "large directory reported");
+
+      await restoreCheckpoint(comparisonRepo, checkpoint);
+      assert(await stat(join(comparisonRepo, "large.bin")).then(() => true), "large file preserved");
+      assert(await stat(join(comparisonRepo, "bulk", "0.txt")).then(() => true), "large dir preserved");
+      assert(
+        await stat(join(comparisonRepo, "node_modules", "ignored.js")).then(() => true),
+        "ignored file preserved",
+      );
+    } finally {
+      await cleanupRepo(comparisonRepo);
+    }
+  });
   // ------ Tool checkpoints ------
 
   console.log("\nTool checkpoints:");
@@ -293,24 +436,103 @@ async function runTests() {
     assertEqual(remaining.length, 3, "3 remaining");
   });
 
-  // ------ findClosestCheckpoint ------
+  await test("pruning preserves protected undo refs for non-UUID sessions", async () => {
+    const pruneRepo = await createTempRepo();
+    try {
+      await createCheckpoint(makeOpts(pruneRepo, {
+        id: "active-old-1",
+        sessionId: "active-session",
+      }));
+      await createCheckpoint(makeOpts(pruneRepo, {
+        id: "active-old-2",
+        sessionId: "active-session",
+      }));
+      const liveUndo = await createCheckpoint(makeOpts(pruneRepo, {
+        id: "active-live-undo",
+        sessionId: "active-session",
+        trigger: "before-restore",
+        restoreTargetId: "active-old-2",
+      }));
+      await pruneCheckpoints(
+        pruneRepo,
+        "active-session",
+        1,
+        new Set([liveUndo.id]),
+      );
+      const activeRemaining = await loadAllCheckpoints(pruneRepo, "active-session");
+      assertEqual(activeRemaining.length, 1, "only protected active ref remains");
+      assertEqual(activeRemaining[0]?.id, liveUndo.id, "live undo protected");
 
-  console.log("\nfindClosestCheckpoint:");
-
-  await test("finds checkpoint before target", async () => {
-    const cps: CheckpointData[] = [
-      { id: "a", timestamp: 100 } as CheckpointData,
-      { id: "b", timestamp: 200 } as CheckpointData,
-      { id: "c", timestamp: 300 } as CheckpointData,
-    ];
-    const result = findClosestCheckpoint(cps, 250);
-    assertEqual(result?.id, "b", "b is closest before 250");
+      const inherited = await createCheckpoint(makeOpts(pruneRepo, {
+        id: "copied-inherited",
+        sessionId: "source-session-name",
+        conversationLeafId: "copied-leaf",
+        conversationLeafParentId: null,
+      }));
+      await createCheckpoint(makeOpts(pruneRepo, {
+        id: "old-ordinary",
+        sessionId: "source-session-name",
+      }));
+      await createCheckpoint(makeOpts(pruneRepo, {
+        id: "old-restore",
+        sessionId: "source-session-name",
+        trigger: "before-restore",
+        restoreTargetId: "old-ordinary",
+      }));
+      await pruneOldSessions(
+        pruneRepo,
+        "active-session",
+        new Set([inherited.id, liveUndo.id]),
+      );
+      const refs = await listCheckpointRefs(pruneRepo);
+      assert(refs.includes(inherited.id), "inherited active-branch checkpoint protected");
+      assert(!refs.includes("old-ordinary"), "old ordinary ref pruned");
+      assert(!refs.includes("old-restore"), "old restore ref pruned with session");
+      assert(refs.includes(liveUndo.id), "current live undo retained");
+    } finally {
+      await cleanupRepo(pruneRepo);
+    }
   });
 
-  await test("returns undefined for empty array", async () => {
-    const result = findClosestCheckpoint([], 100);
-    assertEqual(result, undefined, "empty");
+  await test("deleteCheckpoint rejects while automatic pruning catches deletion failures", async () => {
+    const invalidRoot = await mkdtemp(join(tmpdir(), "pi-rewind-invalid-"));
+    try {
+      let rejected = false;
+      try {
+        await deleteCheckpoint(invalidRoot, "missing");
+      } catch {
+        rejected = true;
+      }
+      assert(rejected, "strict deletion rejects outside a repository");
+    } finally {
+      await rm(invalidRoot, { recursive: true, force: true });
+    }
+
+    const hookRepo = await createTempRepo();
+    try {
+      await createCheckpoint(makeOpts(hookRepo, {
+        id: "hook-prune-1",
+        sessionId: "hook-session",
+      }));
+      await createCheckpoint(makeOpts(hookRepo, {
+        id: "hook-prune-2",
+        sessionId: "hook-session",
+      }));
+      const hookPath = join(hookRepo, ".git", "hooks", "reference-transaction");
+      await writeFile(hookPath, "#!/bin/sh\nexit 1\n");
+      await chmod(hookPath, 0o755);
+      const deleted = await pruneCheckpoints(hookRepo, "hook-session", 0);
+      assertEqual(deleted, 0, "best-effort pruning reports no successful deletions");
+      assertEqual(
+        (await loadAllCheckpoints(hookRepo, "hook-session")).length,
+        2,
+        "failed deletions remain",
+      );
+    } finally {
+      await cleanupRepo(hookRepo);
+    }
   });
+
 
   // ------ Branch safety ------
 
@@ -337,9 +559,13 @@ async function runTests() {
       let threw = false;
       try {
         await restoreCheckpoint(branchRepo, cp);
-      } catch (e: any) {
+      } catch (error) {
         threw = true;
-        assert(e.message.includes("Branch mismatch"), `expected branch mismatch error, got: ${e.message}`);
+        const message = error instanceof Error ? error.message : String(error);
+        assert(
+          message.includes("Branch mismatch"),
+          `expected branch mismatch error, got: ${message}`,
+        );
       }
       assert(threw, "should have thrown on cross-branch restore");
     } finally {

@@ -26,8 +26,8 @@
     },
     {
       "name": "omp-rewind",
-      "version": "0.5.2",
-      "description": "Git checkpoint/rewind for Oh My Pi \u2014 /rewind, tree/branch file restore, safe restore, redo stack",
+      "version": "0.5.3",
+      "description": "Git checkpoint/rewind for Oh My Pi — /rewind, tree/branch file restore, transactional safety, durable undo",
       "category": "development",
       "tags": [
         "rewind",

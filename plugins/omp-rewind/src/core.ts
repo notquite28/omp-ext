@@ -27,6 +27,8 @@ export const MAX_UNTRACKED_DIR_FILES = 200;
 /** Default max checkpoints before auto-pruning */
 export const DEFAULT_MAX_CHECKPOINTS = 50;
 
+const NO_PROTECTED_CHECKPOINTS: ReadonlySet<string> = new Set();
+
 /** Directories to exclude from snapshots (matched against any path component) */
 export const IGNORED_DIR_NAMES = new Set([
   "node_modules",
@@ -81,6 +83,12 @@ export interface CheckpointData {
   skippedLargeFiles?: string[];
   /** Directories skipped because >= 200 files */
   skippedLargeDirs?: string[];
+  /** Exact conversation leaf present when the checkpoint was created */
+  conversationLeafId?: string;
+  /** Parent of the exact conversation leaf; null identifies a root entry */
+  conversationLeafParentId?: string | null;
+  /** Checkpoint ID this before-restore snapshot can undo */
+  restoreTargetId?: string;
 }
 
 // ============================================================================
@@ -346,6 +354,64 @@ async function getFilesToAdd(root: string): Promise<FilesToAddResult> {
   };
 }
 
+interface WorkspaceState {
+  headSha: string;
+  branch: string;
+  indexTreeSha: string;
+  worktreeTreeSha: string;
+  preexistingUntrackedFiles: string[];
+  skippedLargeFiles: string[];
+  skippedLargeDirs: string[];
+}
+
+async function captureWorkspaceState(root: string): Promise<WorkspaceState> {
+  const headSha = await git("rev-parse HEAD", root).catch(() => ZEROS);
+  const branch = await git("rev-parse --abbrev-ref HEAD", root).catch(() => "unknown");
+  const indexTreeSha = await git("write-tree", root);
+  const tmpDir = await mkdtemp(join(tmpdir(), "pi-rewind-"));
+  const tmpIndex = join(tmpDir, "index");
+
+  try {
+    const tmpEnv = { ...process.env, GIT_INDEX_FILE: tmpIndex };
+    const { filtered, allUntracked, skippedLargeFiles, skippedLargeDirs } =
+      await getFilesToAdd(root);
+    const largeDirsSet = new Set(skippedLargeDirs);
+    const largeFilesSet = new Set(skippedLargeFiles);
+    const preexistingUntrackedFiles = allUntracked.filter((file) => {
+      if (shouldIgnoreForSnapshot(file)) return false;
+      if (largeFilesSet.has(file)) return false;
+      if (isPathWithinAny(file, largeDirsSet)) return false;
+      return true;
+    });
+
+    if (headSha !== ZEROS) {
+      await git(`read-tree ${headSha}`, root, { env: tmpEnv });
+    }
+
+    const batchSize = 100;
+    for (let i = 0; i < filtered.length; i += batchSize) {
+      const paths = filtered
+        .slice(i, i + batchSize)
+        .map((file) => `"${file}"`)
+        .join(" ");
+      await git(`add --all -- ${paths}`, root, { env: tmpEnv });
+    }
+
+    const worktreeTreeSha = await git("write-tree", root, { env: tmpEnv });
+    return {
+      headSha,
+      branch,
+      indexTreeSha,
+      worktreeTreeSha,
+      preexistingUntrackedFiles,
+      skippedLargeFiles,
+      skippedLargeDirs,
+    };
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 // ============================================================================
 // Checkpoint CRUD
 // ============================================================================
@@ -359,6 +425,9 @@ export interface CreateCheckpointOpts {
   toolName?: string;
   /** Human-readable label (user prompt, tool args summary) */
   description?: string;
+  conversationLeafId?: string;
+  conversationLeafParentId?: string | null;
+  restoreTargetId?: string;
 }
 
 /**
@@ -366,101 +435,83 @@ export interface CreateCheckpointOpts {
  * Returns full checkpoint metadata.
  */
 export async function createCheckpoint(opts: CreateCheckpointOpts): Promise<CheckpointData> {
-  const { root, id, sessionId, trigger, turnIndex, toolName, description } = opts;
+  const {
+    root,
+    id,
+    sessionId,
+    trigger,
+    turnIndex,
+    toolName,
+    description,
+    conversationLeafId,
+    conversationLeafParentId,
+    restoreTargetId,
+  } = opts;
   const timestamp = Date.now();
   const iso = new Date(timestamp).toISOString();
+  const workspace = await captureWorkspaceState(root);
 
-  const headSha = await git("rev-parse HEAD", root).catch(() => ZEROS);
-  const branch = await git("rev-parse --abbrev-ref HEAD", root).catch(() => "unknown");
-  const indexTreeSha = await git("write-tree", root);
+  const msg = [
+    `pi-rewind:${id}`,
+    `sessionId ${sessionId}`,
+    `trigger ${trigger}`,
+    `turn ${turnIndex}`,
+    toolName ? `toolName ${toolName}` : null,
+    description ? `description ${description}` : null,
+    conversationLeafId ? `conversation-leaf ${conversationLeafId}` : null,
+    conversationLeafParentId !== undefined
+      ? `conversation-leaf-parent ${conversationLeafParentId === null ? "null" : conversationLeafParentId}`
+      : null,
+    restoreTargetId ? `restore-target ${restoreTargetId}` : null,
+    `branch ${workspace.branch}`,
+    `head ${workspace.headSha}`,
+    `index-tree ${workspace.indexTreeSha}`,
+    `worktree-tree ${workspace.worktreeTreeSha}`,
+    `created ${iso}`,
+    `untracked ${JSON.stringify(workspace.preexistingUntrackedFiles)}`,
+    `largeFiles ${JSON.stringify(workspace.skippedLargeFiles)}`,
+    `largeDirs ${JSON.stringify(workspace.skippedLargeDirs)}`,
+  ].filter(Boolean).join("\n");
 
-  const tmpDir = await mkdtemp(join(tmpdir(), "pi-rewind-"));
-  const tmpIndex = join(tmpDir, "index");
+  const commitEnv = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "pi-rewind",
+    GIT_AUTHOR_EMAIL: "rewind@pi",
+    GIT_AUTHOR_DATE: iso,
+    GIT_COMMITTER_NAME: "pi-rewind",
+    GIT_COMMITTER_EMAIL: "rewind@pi",
+    GIT_COMMITTER_DATE: iso,
+  };
 
-  try {
-    const tmpEnv = { ...process.env, GIT_INDEX_FILE: tmpIndex };
+  const commitSha = await git(`commit-tree ${workspace.worktreeTreeSha}`, root, {
+    input: msg,
+    env: commitEnv,
+  });
+  await git(`update-ref ${REF_BASE}/${id} ${commitSha}`, root);
 
-    const { filtered, allUntracked, skippedLargeFiles, skippedLargeDirs } =
-      await getFilesToAdd(root);
-
-    const largeDirsSet = new Set(skippedLargeDirs);
-    const largeFilesSet = new Set(skippedLargeFiles);
-    const preexistingUntrackedFiles = allUntracked.filter((f) => {
-      if (shouldIgnoreForSnapshot(f)) return false;
-      if (largeFilesSet.has(f)) return false;
-      if (isPathWithinAny(f, largeDirsSet)) return false;
-      return true;
-    });
-
-    // Seed temp index from HEAD
-    if (headSha !== ZEROS) {
-      await git(`read-tree ${headSha}`, root, { env: tmpEnv });
-    }
-
-    // Add files in batches of 100
-    const BATCH = 100;
-    for (let i = 0; i < filtered.length; i += BATCH) {
-      const batch = filtered.slice(i, i + BATCH);
-      const paths = batch.map((f) => `"${f}"`).join(" ");
-      await git(`add --all -- ${paths}`, root, { env: tmpEnv });
-    }
-
-    const worktreeTreeSha = await git("write-tree", root, { env: tmpEnv });
-
-    // Build commit message with all metadata
-    const msg = [
-      `pi-rewind:${id}`,
-      `sessionId ${sessionId}`,
-      `trigger ${trigger}`,
-      `turn ${turnIndex}`,
-      toolName ? `toolName ${toolName}` : null,
-      description ? `description ${description}` : null,
-      `branch ${branch}`,
-      `head ${headSha}`,
-      `index-tree ${indexTreeSha}`,
-      `worktree-tree ${worktreeTreeSha}`,
-      `created ${iso}`,
-      `untracked ${JSON.stringify(preexistingUntrackedFiles)}`,
-      `largeFiles ${JSON.stringify(skippedLargeFiles)}`,
-      `largeDirs ${JSON.stringify(skippedLargeDirs)}`,
-    ].filter(Boolean).join("\n");
-
-    const commitEnv = {
-      ...process.env,
-      GIT_AUTHOR_NAME: "pi-rewind",
-      GIT_AUTHOR_EMAIL: "rewind@pi",
-      GIT_AUTHOR_DATE: iso,
-      GIT_COMMITTER_NAME: "pi-rewind",
-      GIT_COMMITTER_EMAIL: "rewind@pi",
-      GIT_COMMITTER_DATE: iso,
-    };
-
-    const commitSha = await git(`commit-tree ${worktreeTreeSha}`, root, {
-      input: msg,
-      env: commitEnv,
-    });
-
-    await git(`update-ref ${REF_BASE}/${id} ${commitSha}`, root);
-
-    return {
-      id,
-      sessionId,
-      trigger,
-      turnIndex,
-      toolName,
-      description,
-      branch,
-      headSha,
-      indexTreeSha,
-      worktreeTreeSha,
-      timestamp,
-      preexistingUntrackedFiles,
-      skippedLargeFiles: skippedLargeFiles.length > 0 ? skippedLargeFiles : undefined,
-      skippedLargeDirs: skippedLargeDirs.length > 0 ? skippedLargeDirs : undefined,
-    };
-  } finally {
-    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-  }
+  return {
+    id,
+    sessionId,
+    trigger,
+    turnIndex,
+    toolName,
+    description,
+    conversationLeafId,
+    conversationLeafParentId,
+    restoreTargetId,
+    branch: workspace.branch,
+    headSha: workspace.headSha,
+    indexTreeSha: workspace.indexTreeSha,
+    worktreeTreeSha: workspace.worktreeTreeSha,
+    timestamp,
+    preexistingUntrackedFiles: workspace.preexistingUntrackedFiles,
+    skippedLargeFiles: workspace.skippedLargeFiles.length > 0
+      ? workspace.skippedLargeFiles
+      : undefined,
+    skippedLargeDirs: workspace.skippedLargeDirs.length > 0
+      ? workspace.skippedLargeDirs
+      : undefined,
+  };
 }
 
 /**
@@ -478,15 +529,10 @@ export async function restoreCheckpoint(root: string, cp: CheckpointData): Promi
       );
     }
   }
-  // 1. Reset HEAD
-  if (cp.headSha !== ZEROS) {
-    await git(`reset --hard ${cp.headSha}`, root);
-  }
-
-  // 2. Restore worktree from snapshot tree
+  // 1. Restore worktree from snapshot tree without moving HEAD
   await git(`read-tree --reset -u ${cp.worktreeTreeSha}`, root);
 
-  // 3. Safe-clean new untracked files only
+  // 2. Safe-clean new untracked files only
   await safeClean(
     root,
     cp.preexistingUntrackedFiles || [],
@@ -494,8 +540,48 @@ export async function restoreCheckpoint(root: string, cp: CheckpointData): Promi
     cp.skippedLargeDirs || [],
   );
 
-  // 4. Restore staged state without touching files
+  // 3. Restore staged state without touching files
   await git(`read-tree --reset ${cp.indexTreeSha}`, root);
+}
+
+export interface WorkspaceComparison {
+  currentWorktreeTreeSha: string;
+  currentIndexTreeSha: string;
+  worktreeChanged: boolean;
+  indexChanged: boolean;
+  worktreeStat: string;
+  indexStat: string;
+  skippedLargeFiles: string[];
+  skippedLargeDirs: string[];
+}
+
+export async function compareCheckpointToCurrent(
+  root: string,
+  checkpoint: CheckpointData,
+): Promise<WorkspaceComparison> {
+  const current = await captureWorkspaceState(root);
+  const worktreeChanged = current.worktreeTreeSha !== checkpoint.worktreeTreeSha;
+  const indexChanged = current.indexTreeSha !== checkpoint.indexTreeSha;
+  const maxStatLength = 2000;
+  const [worktreeStat, indexStat] = await Promise.all([
+    worktreeChanged
+      ? diffCheckpoints(root, checkpoint.worktreeTreeSha, current.worktreeTreeSha)
+      : "",
+    indexChanged
+      ? diffCheckpoints(root, checkpoint.indexTreeSha, current.indexTreeSha)
+      : "",
+  ]);
+
+  return {
+    currentWorktreeTreeSha: current.worktreeTreeSha,
+    currentIndexTreeSha: current.indexTreeSha,
+    worktreeChanged,
+    indexChanged,
+    worktreeStat: worktreeStat.slice(0, maxStatLength),
+    indexStat: indexStat.slice(0, maxStatLength),
+    skippedLargeFiles: current.skippedLargeFiles,
+    skippedLargeDirs: current.skippedLargeDirs,
+  };
 }
 
 async function safeClean(
@@ -504,14 +590,13 @@ async function safeClean(
   skippedFiles: string[],
   skippedDirs: string[],
 ): Promise<void> {
-  const output = await git("ls-files --others --exclude-standard", root).catch(() => "");
-  if (!output) return;
-  const current = output.split("\n").filter(Boolean);
+  const currentWorkspace = await getFilesToAdd(root);
+  const current = currentWorkspace.allUntracked;
   if (current.length === 0) return;
 
   const preSet = new Set(preexisting);
-  const sfSet = new Set(skippedFiles);
-  const sdSet = new Set(skippedDirs);
+  const sfSet = new Set([...skippedFiles, ...currentWorkspace.skippedLargeFiles]);
+  const sdSet = new Set([...skippedDirs, ...currentWorkspace.skippedLargeDirs]);
 
   const toRemove = current.filter((f) => {
     if (preSet.has(f)) return false;
@@ -527,7 +612,7 @@ async function safeClean(
   for (let i = 0; i < toRemove.length; i += BATCH) {
     const batch = toRemove.slice(i, i + BATCH);
     const paths = batch.map((f) => `"${f}"`).join(" ");
-    await git(`clean -f -- ${paths}`, root).catch(() => {});
+    await git(`clean -f -- ${paths}`, root);
   }
 }
 
@@ -562,6 +647,7 @@ export async function loadCheckpointFromRef(
         return arr.length > 0 ? arr : undefined;
       } catch { return undefined; }
     };
+    const conversationLeafParent = get("conversation-leaf-parent");
 
     return {
       id: refName,
@@ -570,6 +656,11 @@ export async function loadCheckpointFromRef(
       turnIndex: parseInt(turn, 10),
       toolName: get("toolName"),
       description: get("description"),
+      conversationLeafId: get("conversation-leaf"),
+      conversationLeafParentId: conversationLeafParent === undefined
+        ? undefined
+        : conversationLeafParent === "null" ? null : conversationLeafParent,
+      restoreTargetId: get("restore-target"),
       branch: get("branch") || "unknown",
       headSha: head,
       indexTreeSha: idx,
@@ -610,7 +701,7 @@ export async function loadAllCheckpoints(
 
 /** Delete a checkpoint ref */
 export async function deleteCheckpoint(root: string, id: string): Promise<void> {
-  await git(`update-ref -d ${REF_BASE}/${id}`, root).catch(() => {});
+  await git(`update-ref -d ${REF_BASE}/${id}`, root);
 }
 
 /** Prune oldest checkpoints for a session, keeping at most `max` */
@@ -618,20 +709,24 @@ export async function pruneCheckpoints(
   root: string,
   sessionId: string,
   max: number = DEFAULT_MAX_CHECKPOINTS,
+  protectedIds: ReadonlySet<string> = NO_PROTECTED_CHECKPOINTS,
 ): Promise<number> {
   const all = await loadAllCheckpoints(root, sessionId);
-  // Sort oldest first
-  all.sort((a, b) => a.timestamp - b.timestamp);
+  all.sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id));
+  const deletionTarget = Math.max(0, all.length - max);
+  let deleted = 0;
 
-  // Don't prune before-restore checkpoints — they're safety nets
-  const prunable = all.filter((cp) => cp.trigger !== "before-restore");
-  if (prunable.length <= max) return 0;
-
-  const toDelete = prunable.slice(0, prunable.length - max);
-  for (const cp of toDelete) {
-    await deleteCheckpoint(root, cp.id);
+  for (const checkpoint of all) {
+    if (deleted >= deletionTarget) break;
+    if (protectedIds.has(checkpoint.id)) continue;
+    try {
+      await deleteCheckpoint(root, checkpoint.id);
+      deleted++;
+    } catch {
+      // Automatic history pruning is best effort.
+    }
   }
-  return toDelete.length;
+  return deleted;
 }
 
 /**
@@ -642,48 +737,33 @@ export async function pruneCheckpoints(
 export async function pruneOldSessions(
   root: string,
   currentSessionId: string,
+  protectedIds: ReadonlySet<string> = NO_PROTECTED_CHECKPOINTS,
   keepPerOldSession: number = 0,
 ): Promise<number> {
-  const refs = await listCheckpointRefs(root);
-  let deleted = 0;
+  const checkpoints = await loadAllCheckpoints(root);
+  const bySession = new Map<string, CheckpointData[]>();
+  for (const checkpoint of checkpoints) {
+    if (checkpoint.sessionId === currentSessionId) continue;
+    const sessionCheckpoints = bySession.get(checkpoint.sessionId);
+    if (sessionCheckpoints) sessionCheckpoints.push(checkpoint);
+    else bySession.set(checkpoint.sessionId, [checkpoint]);
+  }
 
-  // Group refs by session (parse sessionId from ref name without loading full commit)
-  const bySession = new Map<string, string[]>();
-  for (const ref of refs) {
-    // Ref format: refs/pi-checkpoints/{type}-{sessionId}-{turnIndex}-{timestamp}
-    // Extract sessionId: skip the type prefix, take the UUID part
-    const name = ref.replace("refs/pi-checkpoints/", "");
-    const parts = name.split("-");
-    // UUID is 5 groups: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-    // Find it after the trigger prefix (resume, turn, before-restore)
-    let sessionId: string | null = null;
-    for (let i = 0; i < parts.length - 5; i++) {
-      const candidate = parts.slice(i + 1, i + 6).join("-");
-      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(candidate)) {
-        sessionId = candidate;
-        break;
+  let deleted = 0;
+  for (const sessionCheckpoints of bySession.values()) {
+    const toDelete = sessionCheckpoints
+      .filter((checkpoint) => !protectedIds.has(checkpoint.id))
+      .sort((a, b) => b.timestamp - a.timestamp || a.id.localeCompare(b.id))
+      .slice(keepPerOldSession);
+    for (const checkpoint of toDelete) {
+      try {
+        await deleteCheckpoint(root, checkpoint.id);
+        deleted++;
+      } catch {
+        // Automatic old-session pruning is best effort.
       }
     }
-    if (!sessionId || sessionId === currentSessionId) continue;
-
-    if (!bySession.has(sessionId)) bySession.set(sessionId, []);
-    bySession.get(sessionId)!.push(ref);
   }
-
-  for (const [_sid, sessionRefs] of bySession) {
-    // Sort by ref name (contains timestamp at end) — oldest first
-    sessionRefs.sort();
-    const toDelete = keepPerOldSession > 0
-      ? sessionRefs.slice(0, Math.max(0, sessionRefs.length - keepPerOldSession))
-      : sessionRefs;
-
-    for (const ref of toDelete) {
-      const id = ref.replace("refs/pi-checkpoints/", "");
-      await deleteCheckpoint(root, id).catch(() => {});
-      deleted++;
-    }
-  }
-
   return deleted;
 }
 
@@ -713,17 +793,3 @@ export function sanitizeForRef(s: string): string {
   return s.replace(/[^a-zA-Z0-9-]/g, "_");
 }
 
-/** Find checkpoint closest to a target timestamp */
-export function findClosestCheckpoint(
-  checkpoints: CheckpointData[],
-  targetTs: number,
-): CheckpointData | undefined {
-  if (checkpoints.length === 0) return undefined;
-  return checkpoints.reduce((best, cp) => {
-    const bd = Math.abs(best.timestamp - targetTs);
-    const cd = Math.abs(cp.timestamp - targetTs);
-    if (cp.timestamp <= targetTs && best.timestamp > targetTs) return cp;
-    if (best.timestamp <= targetTs && cp.timestamp > targetTs) return best;
-    return cd < bd ? cp : best;
-  });
-}

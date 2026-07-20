@@ -14,7 +14,8 @@
  *   omp -e ./omp-rewind
  *   omp install ./omp-rewind
  */
-import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { CheckpointData } from "./core.js";
 import {
   isGitRepo,
   getRepoRoot,
@@ -26,7 +27,7 @@ import {
   MUTATING_TOOLS,
   DEFAULT_MAX_CHECKPOINTS,
 } from "./core.js";
-import { createInitialState, resetState } from "./state.js";
+import { createInitialState, resetState, runRepositoryOperation } from "./state.js";
 import { updateStatus, clearStatus } from "./ui.js";
 import { registerCommands, handleForkRestore, handleTreeRestore } from "./commands.js";
 
@@ -70,63 +71,93 @@ export default function (pi: ExtensionAPI) {
   // Session lifecycle
   // ========================================================================
 
-  async function initSession(ctx: any): Promise<void> {
-    resetState(state);
+  async function initSession(ctx: ExtensionContext): Promise<void> {
 
-    state.gitAvailable = await isGitRepo(ctx.cwd);
-    if (!state.gitAvailable) {
-      if (ctx.hasUI) clearStatus(ctx);
-      return;
-    }
-
-    state.repoRoot = await getRepoRoot(ctx.cwd);
-    state.sessionId = ctx.sessionManager.getSessionId();
-
-    // Rebuild checkpoint cache from existing git refs (for resumed sessions)
-    try {
-      const existing = await loadAllCheckpoints(state.repoRoot, state.sessionId);
-      for (const cp of existing) {
-        state.checkpoints.set(cp.id, cp);
+    await runRepositoryOperation(state, async () => {
+      resetState(state);
+      state.gitAvailable = await isGitRepo(ctx.cwd);
+      if (!state.gitAvailable) {
+        if (ctx.hasUI) clearStatus(ctx);
+        return;
       }
-    } catch {
-      // Silent — we'll create new checkpoints anyway
-    }
 
-    // Create resume checkpoint (snapshot of current state on session start)
-    try {
-      const resumeId = `resume-${state.sessionId}-${Date.now()}`;
-      const cp = await createCheckpoint({
-        root: state.repoRoot,
-        id: resumeId,
-        sessionId: state.sessionId,
-        trigger: "resume",
-        turnIndex: 0,
-        description: "Session start",
-      });
-      state.resumeCheckpoint = cp;
-      state.checkpoints.set(cp.id, cp);
-      state.lastWorktreeTree = cp.worktreeTreeSha;
-    } catch {
-      // Resume checkpoint is optional
-    }
+      state.repoRoot = await getRepoRoot(ctx.cwd);
+      state.sessionId = ctx.sessionManager.getSessionId();
 
-    if (ctx.hasUI) updateStatus(state, ctx);
+      const branchEntryIds = new Set(
+        ctx.sessionManager.getBranch().map((entry) => entry.id),
+      );
+      let allCheckpoints: CheckpointData[] = [];
+      try {
+        allCheckpoints = await loadAllCheckpoints(state.repoRoot);
+      } catch {
+        // Existing refs are optional; capture can still proceed.
+      }
 
-    // Prune old sessions in background (non-blocking)
-    if (state.repoRoot && state.sessionId) {
-      const root = state.repoRoot;
-      const sid = state.sessionId;
-      pruneOldSessions(root, sid).then((pruned) => {
-        if (pruned > 0) {
-          // Reload cache after prune
-          loadAllCheckpoints(root, sid).then((remaining) => {
-            state.checkpoints.clear();
-            for (const cp of remaining) state.checkpoints.set(cp.id, cp);
-            if (ctx.hasUI) updateStatus(state, ctx);
-          }).catch(() => {});
+      const belongsToActiveBranch = (checkpoint: CheckpointData) =>
+        checkpoint.sessionId === state.sessionId
+        || (
+          checkpoint.conversationLeafId !== undefined
+          && branchEntryIds.has(checkpoint.conversationLeafId)
+        );
+      for (const checkpoint of allCheckpoints) {
+        if (checkpoint.trigger !== "before-restore" && belongsToActiveBranch(checkpoint)) {
+          state.checkpoints.set(checkpoint.id, checkpoint);
         }
-      }).catch(() => {});
-    }
+      }
+
+      const recoverableUndoCheckpoints = allCheckpoints
+        .filter(
+          (checkpoint) =>
+            checkpoint.trigger === "before-restore"
+            && checkpoint.restoreTargetId !== undefined
+            && belongsToActiveBranch(checkpoint),
+        )
+        .sort((a, b) => b.timestamp - a.timestamp || a.id.localeCompare(b.id));
+      state.undoCheckpoint = recoverableUndoCheckpoints[0] ?? null;
+
+      for (const checkpoint of allCheckpoints) {
+        if (checkpoint.trigger !== "before-restore") continue;
+        const isOlderEligibleUndo =
+          belongsToActiveBranch(checkpoint) && checkpoint.id !== state.undoCheckpoint?.id;
+        const isUnlinkedCurrentSession =
+          checkpoint.sessionId === state.sessionId && checkpoint.restoreTargetId === undefined;
+        if (isOlderEligibleUndo || isUnlinkedCurrentSession) {
+          await deleteCheckpoint(state.repoRoot, checkpoint.id).catch(() => {});
+        }
+      }
+
+      try {
+        const leafId = ctx.sessionManager.getLeafId();
+        const leafEntry = leafId ? ctx.sessionManager.getEntry(leafId) : undefined;
+        const resumeId = `resume-${state.sessionId}-${Date.now()}`;
+        const cp = await createCheckpoint({
+          root: state.repoRoot,
+          id: resumeId,
+          sessionId: state.sessionId,
+          trigger: "resume",
+          turnIndex: 0,
+          description: "Session start",
+          conversationLeafId: leafEntry?.id,
+          conversationLeafParentId: leafEntry?.parentId,
+        });
+        state.resumeCheckpoint = cp;
+        state.checkpoints.set(cp.id, cp);
+        state.lastWorktreeTree = cp.worktreeTreeSha;
+      } catch {
+        // Resume checkpoint is optional.
+      }
+
+      try {
+        const protectedIds = new Set(state.checkpoints.keys());
+        if (state.undoCheckpoint) protectedIds.add(state.undoCheckpoint.id);
+        await pruneOldSessions(state.repoRoot, state.sessionId, protectedIds);
+      } catch {
+        // Old-session pruning is best effort.
+      }
+
+      if (ctx.hasUI) updateStatus(state, ctx);
+    });
   }
 
   pi.on("session_start", async (_event, ctx) => {
@@ -137,9 +168,10 @@ export default function (pi: ExtensionAPI) {
   // /new, /resume, /fork, handoff — OMP emits session_switch, not session_start.
   pi.on("session_switch", async (event, ctx) => {
     if (event.reason === "fork") {
-      // Fork: keep existing checkpoints, retag new session id.
-      if (!state.gitAvailable) return;
-      state.sessionId = ctx.sessionManager.getSessionId();
+      await runRepositoryOperation(state, async () => {
+        if (!state.gitAvailable) return;
+        state.sessionId = ctx.sessionManager.getSessionId();
+      });
       return;
     }
     await initSession(ctx);
@@ -147,8 +179,10 @@ export default function (pi: ExtensionAPI) {
 
   // /branch creates a new session file; retag so new checkpoints stay isolated.
   pi.on("session_branch", async (_event, ctx) => {
-    if (!state.gitAvailable) return;
-    state.sessionId = ctx.sessionManager.getSessionId();
+    await runRepositoryOperation(state, async () => {
+      if (!state.gitAvailable) return;
+      state.sessionId = ctx.sessionManager.getSessionId();
+    });
   });
 
   // ========================================================================
@@ -206,71 +240,100 @@ export default function (pi: ExtensionAPI) {
     if (!state.gitAvailable || state.failed) return;
     if (!state.repoRoot || !state.sessionId) return;
 
-    // Only create checkpoint if this turn had mutating tools
-    if (state.turnHadMutations) {
-      // Build description: prompt + tools
-      const promptLabel = state.currentPrompt ? `"${state.currentPrompt}"` : "";
-      const toolsLabel = state.turnToolDescriptions.join(", ");
-      const desc = promptLabel && toolsLabel
-        ? `${promptLabel} → ${toolsLabel}`
-        : promptLabel || toolsLabel || `Turn ${state.currentTurnIndex}`;
+    const leafId = ctx.sessionManager.getLeafId();
+    const leafEntry = leafId ? ctx.sessionManager.getEntry(leafId) : undefined;
+    const root = state.repoRoot;
+    const sessionId = state.sessionId;
+    const turnIndex = state.currentTurnIndex;
+    const hadMutations = state.turnHadMutations;
+    const promptLabel = state.currentPrompt ? `"${state.currentPrompt}"` : "";
+    const toolsLabel = state.turnToolDescriptions.join(", ");
+    const description = promptLabel && toolsLabel
+      ? `${promptLabel} → ${toolsLabel}`
+      : promptLabel || toolsLabel || `Turn ${turnIndex}`;
 
-      // Wait for any in-flight checkpoint
-      if (state.pending) await state.pending;
-
-      state.pending = (async () => {
-        try {
-          const ts = Date.now();
-          const id = `turn-${state.sessionId}-${state.currentTurnIndex}-${ts}`;
+    try {
+      await runRepositoryOperation(state, async () => {
+        if (
+          !state.gitAvailable
+          || state.repoRoot !== root
+          || state.sessionId !== sessionId
+        ) return;
+        if (hadMutations) {
+          const timestamp = Date.now();
           const cp = await createCheckpoint({
-            root: state.repoRoot!,
-            id,
-            sessionId: state.sessionId!,
+            root,
+            id: `turn-${sessionId}-${turnIndex}-${timestamp}`,
+            sessionId,
             trigger: "tool",
-            turnIndex: state.currentTurnIndex,
-            description: desc,
+            turnIndex,
+            description,
+            conversationLeafId: leafEntry?.id,
+            conversationLeafParentId: leafEntry?.parentId,
           });
 
-          // Skip if worktree is identical to last checkpoint (read-only bash like ls, find, cat)
+
+          if (
+            !state.gitAvailable
+            || state.repoRoot !== root
+            || state.sessionId !== sessionId
+          ) return;
           if (state.lastWorktreeTree && cp.worktreeTreeSha === state.lastWorktreeTree) {
-            await deleteCheckpoint(state.repoRoot!, cp.id);
-            return;
+            await deleteCheckpoint(root, cp.id);
+          } else {
+            state.checkpoints.set(cp.id, cp);
+            state.lastWorktreeTree = cp.worktreeTreeSha;
           }
+        }
 
-          state.checkpoints.set(cp.id, cp);
-          state.lastWorktreeTree = cp.worktreeTreeSha;
-          if (ctx.hasUI) updateStatus(state, ctx);
+        try {
+          const protectedIds = new Set(
+            [...state.checkpoints.values()]
+              .filter((checkpoint) => checkpoint.sessionId !== sessionId)
+              .map((checkpoint) => checkpoint.id),
+          );
+          if (state.undoCheckpoint) protectedIds.add(state.undoCheckpoint.id);
+          const pruned = await pruneCheckpoints(
+            root,
+            sessionId,
+            DEFAULT_MAX_CHECKPOINTS,
+            protectedIds,
+          );
+          if (pruned > 0) {
+            const remaining = await loadAllCheckpoints(root, sessionId);
+            if (
+              !state.gitAvailable
+              || state.repoRoot !== root
+              || state.sessionId !== sessionId
+            ) return;
+            for (const [id, checkpoint] of state.checkpoints) {
+              if (checkpoint.sessionId === sessionId) state.checkpoints.delete(id);
+            }
+            for (const checkpoint of remaining) {
+              if (checkpoint.trigger !== "before-restore") {
+                state.checkpoints.set(checkpoint.id, checkpoint);
+              }
+            }
+          }
         } catch {
-          // Checkpoint failures are non-fatal
+          // Pruning is non-critical.
         }
-      })();
-    }
 
-    // Wait for checkpoint to complete before pruning
-    if (state.pending) await state.pending;
-
-    // Auto-prune
-    try {
-      const pruned = await pruneCheckpoints(
-        state.repoRoot,
-        state.sessionId,
-        DEFAULT_MAX_CHECKPOINTS,
-      );
-      if (pruned > 0) {
-        const remaining = await loadAllCheckpoints(state.repoRoot, state.sessionId);
-        state.checkpoints.clear();
-        for (const cp of remaining) {
-          state.checkpoints.set(cp.id, cp);
-        }
-        if (ctx.hasUI) updateStatus(state, ctx);
-      }
+        if (
+          ctx.hasUI
+          && state.gitAvailable
+          && state.repoRoot === root
+          && state.sessionId === sessionId
+        ) updateStatus(state, ctx);
+      });
     } catch {
-      // Pruning is non-critical
+      // Checkpoint failures are non-fatal.
+    } finally {
+      if (state.repoRoot === root && state.sessionId === sessionId) {
+        state.turnToolDescriptions = [];
+        state.turnHadMutations = false;
+      }
     }
-
-    // Reset turn state
-    state.turnToolDescriptions = [];
-    state.turnHadMutations = false;
   });
 
   // ========================================================================
@@ -283,6 +346,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_before_tree", async (event, ctx) => {
+    if (state.suppressNavigationRestore > 0) return undefined;
     return handleTreeRestore(state, event, ctx);
   });
 
@@ -291,6 +355,6 @@ export default function (pi: ExtensionAPI) {
   // ========================================================================
 
   pi.on("session_shutdown", async () => {
-    if (state.pending) await state.pending;
+    await state.repositoryTail;
   });
 }

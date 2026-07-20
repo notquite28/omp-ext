@@ -15,11 +15,13 @@ Shipped from the multi-plugin marketplace as **`omp-rewind@omp-ext`** (sibling o
 - Smart checkpointing — snapshots after write/edit/bash/ast_edit/eval, 1 per turn
 - Smart dedup — skips checkpoints when worktree unchanged
 - Descriptive labels — `"user prompt" → write → file.ts, edit → other.ts`
-- Diff preview before restore (`/rewind`)
+- Accurate staged/worktree preview before every file restore
 - Branch labels in picker — `[feature]` for same-branch, `⚠️ main` for cross-branch
-- Redo stack (multi-level undo) — "↩ Undo last rewind"
+- Durable single-step undo — "↩ Undo last rewind" survives restarts
 - Restore options: files + conversation, files only, conversation only
-- Safe restore — never deletes `node_modules`, `.venv`, or large files
+- Transactional restore — failures roll files/index back to the pre-restore snapshot
+- Ref-safe restore — preserves `HEAD`, branch tips, `node_modules`, `.venv`, and large files
+- Exact conversation routing by persisted session-entry ID; legacy checkpoints remain files-only
 - Branch safety — blocks cross-branch restore
 - Git-based checkpoints stored as `refs/pi-checkpoints/*` (shared with pi-rewind; survives restarts)
 - Footer status indicator (`◆ X checkpoints`)
@@ -100,7 +102,7 @@ Checkpoint refs stay under `refs/pi-checkpoints/` so existing pi-rewind checkpoi
 
 ```bash
 # Run tests
-bun tests/core.test.ts
+bun run test
 # or
 npm test
 

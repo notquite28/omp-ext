@@ -17,12 +17,14 @@ export interface RewindState {
   checkpoints: Map<string, CheckpointData>;
   /** Checkpoint taken at session start (fallback for restore) */
   resumeCheckpoint: CheckpointData | null;
-  /** Stack of before-restore checkpoints for undo */
-  redoStack: CheckpointData[];
+  /** Singular durable checkpoint used by Undo last rewind */
+  undoCheckpoint: CheckpointData | null;
   /** True if checkpoint creation failed (stop retrying) */
   failed: boolean;
-  /** Promise of in-flight checkpoint (avoid races) */
-  pending: Promise<void> | null;
+  /** FIFO tail for every repository operation */
+  repositoryTail: Promise<void>;
+  /** Nesting guard for tree navigation initiated by this plugin */
+  suppressNavigationRestore: number;
   /** Current turn index (updated by turn_start) */
   currentTurnIndex: number;
   /** Current user prompt (updated by before_agent_start) */
@@ -44,9 +46,10 @@ export function createInitialState(): RewindState {
     sessionId: null,
     checkpoints: new Map(),
     resumeCheckpoint: null,
-    redoStack: [],
+    undoCheckpoint: null,
     failed: false,
-    pending: null,
+    repositoryTail: Promise.resolve(),
+    suppressNavigationRestore: 0,
     currentTurnIndex: 0,
     currentPrompt: "",
     pendingToolInfo: new Map(),
@@ -62,13 +65,25 @@ export function resetState(state: RewindState): void {
   state.sessionId = null;
   state.checkpoints.clear();
   state.resumeCheckpoint = null;
-  state.redoStack = [];
+  state.undoCheckpoint = null;
   state.failed = false;
-  state.pending = null;
   state.currentTurnIndex = 0;
+  state.suppressNavigationRestore = 0;
   state.currentPrompt = "";
   state.pendingToolInfo.clear();
   state.turnToolDescriptions = [];
   state.turnHadMutations = false;
   state.lastWorktreeTree = null;
+}
+
+export function runRepositoryOperation<T>(
+  state: RewindState,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const result = state.repositoryTail.catch(() => undefined).then(operation);
+  state.repositoryTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }
