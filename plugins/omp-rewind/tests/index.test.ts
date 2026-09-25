@@ -88,9 +88,9 @@ function requireHandler(captured: CapturedExtension, name: string): Handler {
 async function runTests(): Promise<void> {
   console.log("\nomp-rewind lifecycle tests\n");
 
-  await test("registers one OMP rewind command and native lifecycle hooks", async () => {
+  await test("registers one timetravel command and native lifecycle hooks", async () => {
     const captured = captureExtension();
-    assertEqual(captured.commands.join(","), "rewind", "exact command registration");
+    assertEqual(captured.commands.join(","), "timetravel", "exact command registration");
     for (const name of ["turn_end", "session_before_branch", "session_before_tree"]) {
       assert(captured.handlers.has(name), `${name} registered`);
     }

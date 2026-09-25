@@ -7,7 +7,7 @@
 | Plugin | Package | Purpose |
 |---|---|---|
 | `omp-grok-build` | `plugins/omp-grok-build/` | Grok Build CLI provider — chat/billing via the CLI entitlement proxy, usage bars, and Grok Imagine image/video commands and tools. |
-| `omp-rewind` | `plugins/omp-rewind/` | Git checkpoint/rewind — `/rewind`, transactional tree/file restore, durable undo. |
+| `omp-rewind` | `plugins/omp-rewind/` | Git worktree/index checkpoints with `/timetravel`, native branch/tree restore hooks, transactional restore, and durable undo. |
 
 Catalog (`.claude-plugin/marketplace.json`, Claude Code marketplace schema): name `omp-ext`, `metadata.version` `0.3.1`. End users install:
 
@@ -63,15 +63,15 @@ src/core.ts   PURE git ops, zero host deps (Node builtins only)
 src/index.ts  HOST WIRING (default export function(pi))
               ├─ session_* hooks → initSession, resume checkpoint
               ├─ turn tool hooks → createCheckpoint when MUTATING_TOOLS fired
-              ├─ /rewind command + session_before_branch/_tree hooks → restore
+              ├─ /timetravel command + native session_before_branch/_tree hooks → restore
               └─ footer ◆ N checkpoints
 
-src/commands.ts  /rewind subcommands (restore/diff/status/help), UI-driven restore flow, transactional restore
+src/commands.ts  /timetravel subcommands (restore/diff/status/help), UI-driven restore flow, transactional restore
 src/state.ts     in-memory singleton; persistence = git refs (no state file)
 src/ui.ts        footer renderer
 ```
 
-**Important:** this plugin does **not** register an `Esc+Esc`/`doubleEscapeAction` keybinding — `index.ts` leaves that to the host. Restore is exposed only via `/rewind restore` and the `session_before_branch` / `session_before_tree` hooks.
+**Important:** this plugin does **not** register an `Esc+Esc`/`doubleEscapeAction` keybinding or a `/rewind` compatibility alias. OMP owns `/rewind` as an alias for `/branch`; both invoke `session_before_branch`. Native `/tree` invokes `session_before_tree`. The plugin exposes direct Git operations through `/timetravel`.
 
 Checkpointing triggers after a turn uses any tool in `MUTATING_TOOLS` (`core.ts:66-72`):
 
@@ -79,7 +79,9 @@ Checkpointing triggers after a turn uses any tool in `MUTATING_TOOLS` (`core.ts:
 export const MUTATING_TOOLS = new Set(["write", "edit", "bash", "ast_edit", "eval"]);
 ```
 
-`/rewind restore` opens the checkpoint browser. It offers restore modes: `all` | `files` | `conversation` | `cancel`. Restore is **transactional** — a `before-restore` safety checkpoint is created first; on failure it rolls back to the safety cp (retained on double-failure). Cross-branch restore throws `Branch mismatch`.
+`/timetravel restore` opens the checkpoint browser. It offers restore modes: `all` | `files` | `conversation` | `cancel`. Restore is **transactional**: a `before-restore` safety checkpoint is created first; on failure it rolls back to the safety checkpoint, which is retained on double failure. Cross-branch restore throws `Branch mismatch`.
+
+OMP's optional native `checkpoint` and `rewind` model tools rewrite conversation context only. They do not restore the Git worktree or index.
 
 All git-touching hook bodies run through `runRepositoryOperation(state, op)` which serializes onto a FIFO `repositoryTail` promise — the single concurrency-control mechanism.
 
@@ -166,7 +168,7 @@ Do not combine `--no-extensions` with `--extension` for local development on OMP
 | `plugins/omp-grok-build/src/video/*` | `generate.ts` (proxy video submit + poll), `tool.ts` (`video_gen`), `workflow.ts`, `save.ts` (download), `parseArgs.ts`, `index.ts` (command) |
 | `plugins/omp-rewind/src/core.ts` | Pure git core — checkpoint CRUD, restore, prune, compare |
 | `plugins/omp-rewind/src/index.ts` | Host wiring — session/turn/tool hooks |
-| `plugins/omp-rewind/src/commands.ts` | `/rewind` flow, transactional restore, ancestry resolution |
+| `plugins/omp-rewind/src/commands.ts` | `/timetravel` flow, native branch/tree restore hooks, transactional restore, ancestry resolution |
 | `plugins/omp-rewind/src/state.ts` | In-memory `RewindState` + `runRepositoryOperation` FIFO |
 | `.claude-plugin/marketplace.json` | Catalog — `plugins[].version` must match each `package.json` |
 | `scripts/validate-marketplace.ts` | Enforces catalog ↔ package alignment |

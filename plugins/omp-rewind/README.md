@@ -1,16 +1,19 @@
 # omp-rewind
 
-Git checkpoint/rewind extension for [Oh My Pi](https://omp.sh). Creates automatic git-based snapshots of your working tree so you can rewind file changes (and optionally conversation) when the agent makes mistakes.
+Git checkpoint extension for [Oh My Pi](https://omp.sh). It snapshots the Git worktree and index so you can restore file changes, with optional conversation restore, when an agent makes mistakes.
 
 Port of [pi-rewind](https://github.com/arpagon/pi-rewind) for OMP: `omp.extensions` manifest, `@oh-my-pi/pi-coding-agent` types, and expanded mutating-tool coverage for OMP builtins (`ast_edit`, `eval`).
 
 Shipped from the multi-plugin marketplace as **`omp-rewind@omp-ext`** (sibling of `omp-grok-build`, not the same package).
 
-> **Not the same as OMP’s built-in `checkpoint`/`rewind` tools.** Those (setting `checkpoint.enabled`) collapse conversation history only. This extension stores **git worktree snapshots** and exposes `/rewind` plus restore prompts on `/tree` / `/branch`. Keep both; they solve different problems.
+> OMP has two native features that use the word "rewind." The `/rewind` command is an alias for `/branch`; both branch conversation history and invoke this extension's `session_before_branch` hook. The optional `checkpoint` and `rewind` model tools collapse conversation context. Neither native feature restores the Git worktree or index. This plugin snapshots both and exposes the Git operations through `/timetravel`.
 
 ## Features
 
-- `/rewind restore` — checkpoint browser → diff preview → restore modes
+- `/timetravel restore` opens the checkpoint browser, diff preview, and restore modes
+- `/timetravel diff` previews restore effects; `/timetravel diff --full` lists every affected path
+- `/timetravel status` reports checkpoint health
+- `/timetravel help` prints command usage
 - Session tree / branch integration — pick an earlier message, optionally restore files
 - Smart checkpointing — snapshots after write/edit/bash/ast_edit/eval, 1 per turn
 - Smart dedup — skips checkpoints when worktree unchanged
@@ -60,7 +63,7 @@ omp --profile <profile> plugin uninstall omp-rewind
 omp --profile <profile> plugin install --force omp-rewind@omp-ext
 ```
 
-Inside the development session, run `/rewind help` to verify the local extension loaded. Restart OMP after source changes. Avoid combining `--no-extensions` with `--extension`: OMP 17.1.2 suppresses the explicit extension along with discovered extensions.
+Inside the development session, run `/timetravel help` to verify the local extension loaded. Restart OMP after source changes. Avoid combining `--no-extensions` with `--extension`: OMP 17.1.2 suppresses the explicit extension along with discovered extensions.
 
 Full marketplace lifecycle (add/remove catalog, scopes, discover): see the [repo root README](../../README.md#install--uninstall).
 
@@ -68,12 +71,14 @@ Full marketplace lifecycle (add/remove catalog, scopes, discover): see the [repo
 
 | Goal | How |
 | --- | --- |
-| Git checkpoint browser (diff + restore modes) | **`/rewind restore`** |
-| Jump conversation to an earlier message | **`/tree`** or **Esc+Esc** (host, default) |
-| Optional file restore after tree/branch pick | Prompt: *Keep current files* / *Restore files to that point* |
-| Branch from a user message | **`/branch`** (same file-restore prompt when applicable) |
+| Git checkpoint browser and restore modes | **`/timetravel restore`** |
+| Preview restore effects | **`/timetravel diff`** or **`/timetravel diff --full`** |
+| Inspect checkpoint health or command usage | **`/timetravel status`** or **`/timetravel help`** |
+| Branch conversation history | Native **`/rewind`** alias or **`/branch`**; both invoke `session_before_branch` |
+| Jump conversation to an earlier message | Native **`/tree`** or **Esc+Esc**; both invoke `session_before_tree` with the default host setting |
+| Optional file restore after native branch/tree selection | Prompt: *Keep current files* / *Restore files to that point* |
 
-Esc+Esc is owned by OMP (`doubleEscapeAction`, default `"tree"`). This extension does **not** capture double-Esc, so the session tree stays available. Git-only restore uses **`/rewind restore`**.
+Esc+Esc is owned by OMP (`doubleEscapeAction`, default `"tree"`). This extension does not capture double-Esc. Use `/timetravel restore` for direct Git restore.
 
 ```yaml
 # ~/.omp/agent/config.yml — host double-Esc (default is already tree)
@@ -88,7 +93,7 @@ Two-layer split: `core.ts` is pure git operations with zero coding-agent depende
 src/
 ├── core.ts       # git operations, filtering, safe restore, branch safety, prune
 ├── index.ts      # OMP event hooks, checkpoint scheduling, auto-prune
-├── commands.ts   # /rewind, fork/tree restore handlers
+├── commands.ts   # /timetravel plus native branch/tree restore handlers
 ├── state.ts      # shared mutable state
 └── ui.ts         # footer status indicator
 ```
@@ -105,7 +110,7 @@ omp --profile <profile> plugin link --force ./plugins/omp-rewind
 omp --profile <profile>
 ```
 
-Run `/rewind help` inside OMP to confirm the development copy loaded. To switch back, uninstall the local package name and force-install the marketplace ID:
+Run `/timetravel help` inside OMP to confirm the development copy loaded. To switch back, uninstall the local package name and force-install the marketplace ID:
 
 ```bash
 omp --profile <profile> plugin uninstall omp-rewind
@@ -123,12 +128,13 @@ bun run test
 
 Use a disposable Git repository because the extension creates refs under `refs/pi-checkpoints/*` and restores real index/worktree state.
 
-1. Launch the linked profile and run `/rewind help`; the usage text confirms command registration.
-2. Run `/rewind status`; a healthy session reports its checkpoint refs instead of sending the text to the model.
-3. Ask OMP to modify a tracked file and wait for the turn to finish.
-4. Confirm the footer shows `◆ N checkpoints`, then run `/rewind restore`.
-5. Select the latest pre-change checkpoint and restore files only.
-6. Confirm the file and index match the selected checkpoint while `HEAD` and the branch tip remain unchanged.
+1. Launch the linked profile and run `/timetravel help`; the usage text confirms command registration.
+2. Run `/timetravel status`; a healthy session reports its checkpoint refs instead of sending the text to the model.
+3. Run native `/rewind`; OMP should open its conversation branch selector or report that no user turns exist.
+4. Ask OMP to modify a tracked file and wait for the turn to finish.
+5. Confirm the footer shows `◆ N checkpoints`, then run `/timetravel restore`.
+6. Select the latest pre-change checkpoint and restore files only.
+7. Confirm the worktree and index match the selected checkpoint while `HEAD` and the branch tip remain unchanged.
 
 ## Lineage
 

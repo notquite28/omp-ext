@@ -64,9 +64,9 @@ function describeToolCall(toolName: string, input: any): string {
 export default function (pi: ExtensionAPI) {
   const state = createInitialState();
 
-  // Register /rewind command (git checkpoint browser).
-  // Esc+Esc is left to the host (session tree / branch via doubleEscapeAction).
-  // Tree/branch navigation hooks below offer optional file restore.
+  // Register /timetravel for the git checkpoint browser.
+  // Native /branch and its /rewind alias pass through the branch hook below.
+  // Native /tree passes through the tree hook. Esc+Esc remains host-owned.
   registerCommands(pi, state);
 
   // ========================================================================
@@ -170,7 +170,7 @@ export default function (pi: ExtensionAPI) {
     await initSession(ctx);
   });
 
-  // /new, /resume, /fork, handoff — OMP emits session_switch, not session_start.
+  // /new, /resume, and /fork emit session_switch, not session_start.
   pi.on("session_switch", async (event, ctx) => {
     if (event.reason === "fork") {
       await runRepositoryOperation(state, async () => {
@@ -182,7 +182,7 @@ export default function (pi: ExtensionAPI) {
     await initSession(ctx);
   });
 
-  // /branch creates a new session file; retag so new checkpoints stay isolated.
+  // Native /branch and its /rewind alias create a new session file; retag checkpoints.
   pi.on("session_branch", async (_event, ctx) => {
     await runRepositoryOperation(state, async () => {
       if (!state.gitAvailable) return;

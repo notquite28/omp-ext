@@ -5,7 +5,7 @@ Oh My Pi marketplace containing **two separate plugins**:
 | Plugin | What it does |
 | --- | --- |
 | [`omp-grok-build`](./plugins/omp-grok-build) | Grok Build CLI provider (`grok-build/*`), OAuth, usage, and Grok Imagine image/video commands and tools |
-| [`omp-rewind`](./plugins/omp-rewind) | Git worktree checkpoints — `/rewind`, session tree/branch restore integration, transactional restore, durable undo |
+| [`omp-rewind`](./plugins/omp-rewind) | Git worktree/index checkpoints with `/timetravel`, native tree/branch restore integration, transactional restore, and durable undo |
 
 Repo layout:
 
@@ -115,7 +115,7 @@ omp --profile <profile> plugin link --force ./plugins/omp-rewind
 omp --profile <profile>
 ```
 
-Verify the linked extension inside OMP with `/rewind help`. Restart OMP after source changes.
+Verify the linked extension inside OMP with `/timetravel help`. Restart OMP after source changes.
 
 Restore the marketplace installation when local testing is complete:
 

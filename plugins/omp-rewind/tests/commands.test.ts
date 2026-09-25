@@ -160,7 +160,7 @@ interface RegisteredCommand {
   }> | null;
 }
 
-function registerRewind(state: RewindState): RegisteredCommand {
+function registerTimetravel(state: RewindState): RegisteredCommand {
   let registered: RegisteredCommand | undefined;
   const api = {
     registerCommand: (_name: string, command: RegisteredCommand) => {
@@ -169,7 +169,7 @@ function registerRewind(state: RewindState): RegisteredCommand {
   };
   // registerCommands only calls registerCommand on this focused fake.
   registerCommands(api as unknown as ExtensionAPI, state);
-  if (!registered) throw new Error("rewind command was not registered");
+  if (!registered) throw new Error("timetravel command was not registered");
   return registered;
 }
 
@@ -276,7 +276,7 @@ async function runTests(): Promise<void> {
         navigations++;
         return { cancelled: false };
       });
-      await registerRewind(state).handler("restore", context);
+      await registerTimetravel(state).handler("restore", context);
 
       assertEqual(navigations, 0, "legacy restore does not navigate conversation");
       assertEqual(
@@ -336,7 +336,7 @@ async function runTests(): Promise<void> {
         navigations++;
         return { cancelled: false };
       });
-      await registerRewind(state).handler("restore", context);
+      await registerTimetravel(state).handler("restore", context);
 
       assertEqual(await readFile(join(root, "tracked.txt"), "utf-8"), currentBytes, "rollback bytes");
       assertEqual(state.undoCheckpoint?.id, priorUndo.id, "prior undo remains authoritative");
@@ -389,7 +389,7 @@ async function runTests(): Promise<void> {
         "Files only (keep conversation)",
       ], [true]);
 
-      await registerRewind(state).handler("restore", createContext(root, manager, ui));
+      await registerTimetravel(state).handler("restore", createContext(root, manager, ui));
 
       assertEqual(
         await readFile(join(root, "tracked.txt"), "utf-8"),
@@ -445,7 +445,7 @@ async function runTests(): Promise<void> {
         navigated.push(id);
         return { cancelled: true };
       });
-      await registerRewind(state).handler("restore", context);
+      await registerTimetravel(state).handler("restore", context);
 
       assertEqual(navigated.join(","), "target-leaf", "navigation uses stored leaf ID");
       assertEqual(await readFile(join(root, "tracked.txt"), "utf-8"), bytesBefore, "worktree rolled back");
@@ -476,7 +476,7 @@ async function runTests(): Promise<void> {
       state.undoCheckpoint = undo;
       await writeFile(join(root, "tracked.txt"), "after rewind\n");
       const ui = new FakeUI(["↩ Undo last rewind"], [true]);
-      await registerRewind(state).handler("restore", createContext(root, manager, ui));
+      await registerTimetravel(state).handler("restore", createContext(root, manager, ui));
       assertEqual(state.undoCheckpoint, null, "successful undo clears state");
       assert(!(await listCheckpointRefs(root)).includes(undo.id), "successful undo consumes ref");
 
@@ -491,7 +491,7 @@ async function runTests(): Promise<void> {
       state.undoCheckpoint = { ...retryable, worktreeTreeSha: "e".repeat(40) };
       await writeFile(join(root, "tracked.txt"), "retry current\n");
       const failureUi = new FakeUI(["↩ Undo last rewind"], [true]);
-      await registerRewind(state).handler("restore", createContext(root, manager, failureUi));
+      await registerTimetravel(state).handler("restore", createContext(root, manager, failureUi));
       assertEqual(state.undoCheckpoint?.id, retryable.id, "failed undo remains available");
       assert((await listCheckpointRefs(root)).includes(retryable.id), "failed undo ref retained");
       assertEqual(
@@ -624,7 +624,7 @@ async function runTests(): Promise<void> {
         restoreTargetId: target.id,
       });
       state.undoCheckpoint = undo;
-      const command = registerRewind(state);
+      const command = registerTimetravel(state);
       assertEqual(
         command.getArgumentCompletions?.("").map((item) => item.value).join("|"),
         "restore|diff|diff --full|status|help",
@@ -634,11 +634,11 @@ async function runTests(): Promise<void> {
       const bareUi = new FakeUI();
       await command.handler("", createContext(root, createSessionManager([], null), bareUi));
       assert(
-        bareUi.notifications.at(-1)?.message.includes("Use /rewind restore to open the checkpoint browser.") === true,
+        bareUi.notifications.at(-1)?.message.includes("Use /timetravel restore to open the checkpoint browser.") === true,
         "bare command shows explicit restore migration hint",
       );
       assert(
-        bareUi.notifications.at(-1)?.message.includes("/rewind restore") === true,
+        bareUi.notifications.at(-1)?.message.includes("/timetravel restore") === true,
         "bare command shows explicit subcommand usage",
       );
       assertEqual(bareUi.selectionOptions.length, 0, "bare command does not open checkpoint picker");
@@ -671,7 +671,7 @@ async function runTests(): Promise<void> {
       assert(report.includes("A restore create.txt"), "restore creates target-only path");
       assert(report.includes("M modify.txt"), "restore modifies tracked path");
       assert(report.includes("D current only.txt"), "restore deletes current-only path");
-      assert(report.includes("use /rewind diff --full"), "default report capped");
+      assert(report.includes("use /timetravel diff --full"), "default report capped");
 
       const fullUi = new FakeUI([(options) => options.find((option) => option.includes("diff target"))]);
       await command.handler("diff --full", createContext(root, manager, fullUi));
@@ -705,7 +705,7 @@ async function runTests(): Promise<void> {
         turnIndex: 1,
       });
       state.checkpoints.set(healthy.id, healthy);
-      const command = registerRewind(state);
+      const command = registerTimetravel(state);
       const manager = createSessionManager([], null);
       const healthyUi = new FakeUI();
       await command.handler("status", createContext(root, manager, healthyUi));
@@ -791,7 +791,7 @@ async function runTests(): Promise<void> {
         (options) => options.find((option) => option.includes("coverage target")),
         "Files only (keep conversation)",
       ], [false]);
-      await registerRewind(state).handler("restore", createContext(root, manager, coverageUi));
+      await registerTimetravel(state).handler("restore", createContext(root, manager, coverageUi));
       assert(
         coverageUi.notifications.some((notice) =>
           notice.message === "Not captured by checkpoint: file target-large.bin"),
@@ -815,7 +815,7 @@ async function runTests(): Promise<void> {
         (options) => options.find((option) => option.includes("preflight invalid")),
         "Files only (keep conversation)",
       ]);
-      await registerRewind(state).handler("restore", createContext(root, manager, invalidUi, async () => {
+      await registerTimetravel(state).handler("restore", createContext(root, manager, invalidUi, async () => {
         navigations++;
         return { cancelled: false };
       }));
@@ -840,7 +840,7 @@ async function runTests(): Promise<void> {
         (options) => options.find((option) => option.includes("oldest marker")),
         "Cancel",
       ]);
-      await registerRewind(state).handler("restore", createContext(root, manager, selectionUi));
+      await registerTimetravel(state).handler("restore", createContext(root, manager, selectionUi));
       assertEqual(selectionUi.selectionOptions[0]?.length, 51, "undo plus all 50 checkpoints selectable");
       assertEqual(
         selectionUi.selectionOptions[1]?.join("|"),
@@ -876,14 +876,14 @@ async function runTests(): Promise<void> {
         (options) => options.find((option) => option.includes("identity target")),
         "Files only (keep conversation)",
       ], [true]);
-      await registerRewind(state).handler("restore", createContext(root, manager, restoreUi));
+      await registerTimetravel(state).handler("restore", createContext(root, manager, restoreUi));
       assertEqual(state.lastWorkspaceIdentity?.worktreeTreeSha, target.worktreeTreeSha, "restore worktree identity");
       assertEqual(state.lastWorkspaceIdentity?.indexTreeSha, target.indexTreeSha, "restore index identity");
 
       const undo = state.undoCheckpoint;
       if (!undo) throw new Error("restore did not create undo checkpoint");
       const undoUi = new FakeUI(["↩ Undo last rewind"], [true]);
-      await registerRewind(state).handler("restore", createContext(root, manager, undoUi));
+      await registerTimetravel(state).handler("restore", createContext(root, manager, undoUi));
       assertEqual(state.lastWorkspaceIdentity?.worktreeTreeSha, undo.worktreeTreeSha, "undo worktree identity");
       assertEqual(state.lastWorkspaceIdentity?.indexTreeSha, undo.indexTreeSha, "undo index identity");
 
@@ -895,7 +895,7 @@ async function runTests(): Promise<void> {
         (options) => options.find((option) => option.includes("identity target")),
         "Restore all (files + conversation)",
       ], [true]);
-      await registerRewind(state).handler("restore", createContext(root, manager, rollbackUi, async () => ({
+      await registerTimetravel(state).handler("restore", createContext(root, manager, rollbackUi, async () => ({
         cancelled: true,
       })));
       assertEqual(
@@ -965,7 +965,7 @@ async function runTests(): Promise<void> {
         await rm(targetObject, { force: true });
         return true;
       }]);
-      await registerRewind(state).handler("restore", createContext(root, createSessionManager([], null), ui));
+      await registerTimetravel(state).handler("restore", createContext(root, createSessionManager([], null), ui));
       assertEqual(state.lastWorkspaceIdentity, null, "double failure clears baseline");
       assert(
         ui.notifications.some((notice) => notice.message.includes("Rollback failed")),

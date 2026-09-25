@@ -1,8 +1,8 @@
 /**
- * omp-rewind — /rewind command and tree/branch restore hooks
+ * omp-rewind — /timetravel command and native tree/branch restore hooks
  *
- * Registers /rewind (git checkpoint browser) and handlers used when the host
- * navigates the session tree or branches from an earlier message.
+ * Registers /timetravel (git checkpoint browser) and handlers used when the host
+ * navigates with native /tree, /branch, or the /rewind alias.
  */
 
 import type {
@@ -420,7 +420,7 @@ async function runDiffFlow(
   ];
   const omitted = totalPaths - shownWorktree.length - shownIndex.length;
   if (omitted > 0) {
-    lines.push("", `... and ${omitted} more path(s); use /rewind diff --full`);
+    lines.push("", `... and ${omitted} more path(s); use /timetravel diff --full`);
   }
   ctx.ui.notify(lines.join("\n"), "info");
 }
@@ -907,19 +907,19 @@ export async function handleTreeRestore(
 // Registration
 // ============================================================================
 
-const REWIND_USAGE = [
-  "Use /rewind restore to open the checkpoint browser.",
+const TIMETRAVEL_USAGE = [
+  "Use /timetravel restore to open the checkpoint browser.",
   "",
   "Usage:",
-  "  /rewind restore",
-  "  /rewind diff",
-  "  /rewind diff --full",
-  "  /rewind status",
-  "  /rewind help",
+  "  /timetravel restore",
+  "  /timetravel diff",
+  "  /timetravel diff --full",
+  "  /timetravel status",
+  "  /timetravel help",
 ].join("\n");
 
 export function registerCommands(pi: ExtensionAPI, state: RewindState): void {
-  pi.registerCommand("rewind", {
+  pi.registerCommand("timetravel", {
     description: "Rewind file changes and/or conversation to a checkpoint",
     getArgumentCompletions: (argumentPrefix: string) => {
       const completions = [
@@ -943,9 +943,9 @@ export function registerCommands(pi: ExtensionAPI, state: RewindState): void {
       } else if (command === "status") {
         await runStatusFlow(state, ctx);
       } else if (command === "help" || command === "--help") {
-        ctx.ui.notify(REWIND_USAGE, "info");
+        ctx.ui.notify(TIMETRAVEL_USAGE, "info");
       } else {
-        ctx.ui.notify(REWIND_USAGE, "warning");
+        ctx.ui.notify(TIMETRAVEL_USAGE, "warning");
       }
     },
   });
